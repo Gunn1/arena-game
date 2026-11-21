@@ -3,11 +3,25 @@
 Fast 2D arena game. Mine blocks, place only what you mined, and survive a map that crumbles under you.
 Fall out of the map (bottom, left or right) and you're out. Last one standing wins the round; first to 3 wins the match.
 
-## Run
+## Get it and run it
 
+Needs Python 3.10+.
+
+    git clone https://github.com/Gunn1/arena-game.git
+    cd arena-game
     python -m venv .venv
+
+Linux / macOS:
+
     .venv/bin/pip install -r requirements.txt
     .venv/bin/python main.py
+
+Windows (PowerShell):
+
+    .venv\Scripts\pip install -r requirements.txt
+    .venv\Scripts\python main.py
+
+To update later: `git pull`. Everyone in an online game must be on the same version.
 
 Test (headless): `.venv/bin/python tests/smoke_test.py`
 
