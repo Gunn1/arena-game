@@ -3,6 +3,8 @@
 Fast 2D arena game. Mine blocks and ore, craft items, and survive a map that crumbles under you.
 Fall out of the map (bottom, left or right) and you're out. Last one standing wins the round; first to 3 wins the match.
 
+**Download (Windows / Linux):** https://github.com/Gunn1/arena-game/releases/latest
+
 **Play in your browser:** https://gunn1.github.io/arena-game/ (local games and joining servers; browsers can't host)
 
 Made with [Godot 4.7](https://godotengine.org) in `godot/`. The original Python/pygame prototype is in `prototype-python/` as a reference.
@@ -57,4 +59,5 @@ Dirt and stone share a 15-block carry limit. Copper (orange specks) and crystal 
 - `godot/scripts/config.gd`: every tunable number. `items.gd`: item costs, uses, cooldowns.
 - `world.gd` map + crumbling, `player.gd` movement/mining/crafting, `sim.gd` rounds + items + snapshots, `main.gd` screens, input, drawing, networking, `sfx.gd` sounds made in code.
 - Tests: `godot --headless --path godot -s tests/test_sim.gd` (rules) and `godot/tests/net_test.sh` (online).
-- Every push to `main` runs the tests and publishes the web version (`.github/workflows/build.yml`). Linux and Windows builds are attached to each run as artifacts.
+- Every push to `main` runs the tests and publishes the web version (`.github/workflows/build.yml`).
+- New download: `git tag v0.2.0 && git push origin v0.2.0` builds Windows + Linux and makes a release.

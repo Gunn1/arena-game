@@ -1,12 +1,14 @@
 # Runs the rules tests, exports the game, and publishes the web version on GitHub Pages.
 # - Every push to main: test, build web + Linux + Windows, publish the web version.
 # - Pull requests: test and build only, nothing is published.
-# Desktop builds are attached to each run as the "desktop-builds" artifact.
+# - Pushing a tag like v0.2.0: also makes a GitHub Release with the Windows and Linux downloads.
+# Desktop builds are also attached to each run as the "desktop-builds" artifact.
 name: Build
 
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -85,7 +87,7 @@ jobs:
             build/windows/arena.exe
 
   publish:
-    if: github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     environment:
@@ -94,3 +96,25 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-builds
+          path: dl
+      - name: Make the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          chmod +x dl/linux/arena.x86_64
+          (cd dl/linux && zip -q ../../arena-linux.zip arena.x86_64)
+          cp dl/windows/arena.exe arena-windows.exe
+          gh release create "${GITHUB_REF_NAME}" arena-windows.exe arena-linux.zip \
+            --repo "${GITHUB_REPOSITORY}" --title "Arena ${GITHUB_REF_NAME}" --generate-notes \
+            --notes "Windows: download arena-windows.exe and run it (Windows may warn because it isn't signed: More info -> Run anyway). Linux: unzip arena-linux.zip and run ./arena.x86_64. Browser version: https://gunn1.github.io/arena-game/"
