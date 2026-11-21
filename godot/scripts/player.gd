@@ -1,6 +1,6 @@
 ## One player: movement, wall jumps, mining, placing, crafting and item slots.
 ## Inputs come in as a Dictionary: left right up down jump mine place item1 item2 item3 craft,
-## plus optional "mouse" (Vector2, in tiles), "stick_aim" (Vector2) and "wheel" (int).
+## plus optional "mouse" (Vector2, in tiles) and "stick_aim" (Vector2).
 class_name Player
 extends RefCounted
 
@@ -27,8 +27,8 @@ var facing := 1
 var aim := Vector2i(1, 0)
 var inv := {}
 var slots: Array = []             # null or {"item": key, "charges": n}
-var crafting := false             # crafting menu open (while craft is held)
-var recipe := 0
+var craft_t := 0.0                # > 0 while the "+Item" popup shows
+var last_crafted := ""            # item key of the last craft, for that popup
 var grapple = null                # Vector3(x, y, time left) while being pulled
 var mine_cd := 0.0
 var place_cd := 0.0
@@ -72,7 +72,8 @@ func spawn(col: int, ground_row: int) -> void:
 	slots = []
 	for i in Cfg.SLOTS:
 		slots.append(null)
-	crafting = false
+	craft_t = 0.0
+	last_crafted = ""
 	grapple = null
 	mine_cd = 0.0
 	place_cd = 0.0
@@ -112,11 +113,7 @@ func collect(tile: int) -> void:
 
 
 func can_afford(key: String) -> bool:
-	var cost: Dictionary = Items.ITEMS[key]["cost"]
-	for m in cost:
-		if inv[m] < cost[m]:
-			return false
-	return true
+	return Items.can_afford(key, inv)
 
 
 ## Pay and put the item in a slot: stacks onto the same item, else the first empty slot,
@@ -140,10 +137,6 @@ func craft(key: String) -> bool:
 				target = i
 	slots[target] = {"item": key, "charges": charges}
 	return true
-
-
-func cycle_recipe(step: int) -> void:
-	recipe = posmod(recipe + step, Items.RECIPES.size())
 
 
 # --- geometry ------------------------------------------------------------------------
@@ -203,12 +196,10 @@ func update(dt: float, inp: Dictionary, game) -> void:
 	swing_cd = maxf(0.0, swing_cd - dt)
 	swing_t = maxf(0.0, swing_t - dt)
 	hurt_t = maxf(0.0, hurt_t - dt)
+	craft_t = maxf(0.0, craft_t - dt)
 
 	var mouse = inp.get("mouse")
-	# Holding craft opens the menu. Without a mouse, left/right pick the recipe, so you stop walking.
-	crafting = inp.get("craft", false)
-	var menu_steering: bool = crafting and mouse == null
-	var dx := 0 if menu_steering else int(inp.get("right", false)) - int(inp.get("left", false))
+	var dx := int(inp.get("right", false)) - int(inp.get("left", false))
 	var dy := int(inp.get("down", false)) - int(inp.get("up", false))
 	if dx:
 		facing = dx
@@ -308,21 +299,16 @@ func _pull(dt: float, world: World) -> bool:
 
 func _use_hands(inp: Dictionary, game) -> void:
 	var world: World = game.world
-	# Crafting: hold craft, pick a recipe, let go to craft it.
-	if crafting:
-		if inp.get("wheel", 0):
-			cycle_recipe(1 if inp["wheel"] > 0 else -1)
-		if inp.get("mouse") != null:
-			var hover: int = game.menu_hover(self, inp["mouse"])
-			if hover != -1:
-				recipe = hover
+	# Quick craft: one press makes the most valuable item you can afford.
+	if pressed(inp, "craft"):
+		var key := Items.best_affordable(inv)
+		if key != "":
+			craft(key)
+			last_crafted = key
+			craft_t = 0.8
+			game.sound("craft")
 		else:
-			if pressed(inp, "right"):
-				cycle_recipe(1)
-			if pressed(inp, "left"):
-				cycle_recipe(-1)
-	elif held.get("craft", false):                # craft button just released
-		game.sound("craft" if craft(Items.RECIPES[recipe]) else "nope")
+			game.sound("nope")
 
 	# Items: each slot has its own button.
 	for i in Cfg.SLOTS:

@@ -341,38 +341,78 @@ func _pick_spawns(g: PackedByteArray, players: int) -> Array:
 	return [best, best_spread]
 
 
-## Copper through the stone, crystal in the deeper stone.
+## Copper through the stone and buried dirt, crystal in the deeper stone.
 func _add_ores(g: PackedByteArray) -> void:
 	for y in ROWS:
 		for x in COLS:
-			if g[y * COLS + x] != STONE:
-				continue
+			var tile := g[y * COLS + x]
 			var r := rng.randf()
-			if r < 0.035:
+			if tile == STONE:
+				if r < 0.05:
+					g[y * COLS + x] = COPPER
+				elif r < 0.075 and y > ROWS * 0.55:
+					g[y * COLS + x] = CRYSTAL
+			elif tile == DIRT and _buried(g, x, y) and r < 0.02:
 				g[y * COLS + x] = COPPER
-			elif r < 0.055 and y > ROWS * 0.6:
-				g[y * COLS + x] = CRYSTAL
 
 
-## Give every spawn the same amount of each ore nearby (turning stone into ore).
+## True if the tile has a solid tile directly above it (so it isn't the top of its column).
+func _buried(g: PackedByteArray, x: int, y: int) -> bool:
+	return y > 0 and g[(y - 1) * COLS + x] != EMPTY
+
+
+## Give every spawn the same amount of each ore within that ore's radius (and at least its
+## minimum) by turning stone or buried dirt into ore. Stops when nothing more can change.
 func _even_out_ores(g: PackedByteArray, spots: Array) -> void:
-	for ore_name in ORE_TILES:
+	for ore_name: String in ORE_TILES:
 		var tile: int = ORE_TILES[ore_name]
-		var counts := []
-		for s in spots:
-			counts.append(_area(s).filter(func(i): return g[i] == tile).size())
-		var target: int = maxi(counts.max(), Cfg.ORE_MIN[ore_name])
-		for k in spots.size():
-			var stones := _area(spots[k]).filter(func(i): return g[i] == STONE)
-			_shuffle(stones)
-			for i in mini(target - counts[k], stones.size()):
-				g[stones[i]] = tile
+		var near: Dictionary = Cfg.ORE_NEAR[ore_name]
+		var radius: int = near["radius"]
+		var least: int = near["min"]
+		var changed := true
+		while changed:
+			changed = false
+			# Overlapping areas can push a neighbour past the target, so re-measure each pass.
+			var target := least
+			for s: Vector2i in spots:
+				target = maxi(target, _count_near(g, s, radius, tile))
+			for s: Vector2i in spots:
+				var need := target - _count_near(g, s, radius, tile)
+				if need <= 0:
+					continue
+				var free := _convertible_near(g, s, radius)
+				_shuffle(free)
+				for k in mini(need, free.size()):
+					var i: int = free[k]
+					g[i] = tile
+					changed = true
 
 
-func _area(s: Vector2i) -> Array:
+func _count_near(g: PackedByteArray, s: Vector2i, radius: int, tile: int) -> int:
+	var n := 0
+	for i: int in _area(s, radius):
+		if g[i] == tile:
+			n += 1
+	return n
+
+
+## Tiles near a spawn that may become ore: stone, or dirt under another block. Never the
+## tile the spawn stands on.
+func _convertible_near(g: PackedByteArray, s: Vector2i, radius: int) -> Array:
 	var out := []
-	var r := Cfg.ORE_RADIUS
-	for y in range(maxi(0, s.y - r), mini(ROWS, s.y + r + 1)):
-		for x in range(maxi(0, s.x - r), mini(COLS, s.x + r + 1)):
+	for i: int in _area(s, radius):
+		var x := i % COLS
+		var y := i / COLS
+		if x == s.x and y == s.y:
+			continue
+		if g[i] == STONE or (g[i] == DIRT and _buried(g, x, y)):
+			out.append(i)
+	return out
+
+
+func _area(s: Vector2i, radius: int) -> Array:
+	var out := []
+	for y in range(maxi(0, s.y - radius), mini(ROWS, s.y + radius + 1)):
+		for x in range(maxi(0, s.x - radius), mini(COLS, s.x + radius + 1)):
 			out.append(y * COLS + x)
 	return out

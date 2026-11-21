@@ -38,8 +38,8 @@ const MIN_FILL := 0.2
 const FAIR_SPREAD := 0.15         # reroll until spawns are within 15% of each other on ground nearby
 const FAIR_RADIUS := 6
 const MIN_NEAR := 35
-const ORE_RADIUS := 7             # every spawn gets the same ore within this many tiles...
-const ORE_MIN := {"copper": 3, "crystal": 2}   # ...and at least this much
+# Per ore: every spawn gets the same amount within this many tiles (a square), and at least min
+const ORE_NEAR := {"copper": {"radius": 4, "min": 2}, "crystal": {"radius": 6, "min": 1}}
 
 # Arena: 40 tiles wide for 2 players, +10 per extra player (60 = full screen for 4)
 const ARENA_BASE := 20

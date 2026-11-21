@@ -21,6 +21,81 @@ const ITEMS := {
 		"help": "cuts a line of blocks"},
 }
 const RECIPES := ["push", "boost", "platform", "grapple", "bomb", "laser"]
+const MATERIAL_VALUE := {"dirt": 1, "stone": 1, "copper": 3, "crystal": 5}
+
+
+## How valuable an item is: what its materials are worth.
+static func item_value(key: String) -> int:
+	var cost: Dictionary = ITEMS[key]["cost"]
+	var total := 0
+	for m: String in cost:
+		var amount: int = cost[m]
+		var worth: int = MATERIAL_VALUE[m]
+		total += amount * worth
+	return total
+
+
+static func can_afford(key: String, inv: Dictionary) -> bool:
+	var cost: Dictionary = ITEMS[key]["cost"]
+	for m: String in cost:
+		var have: int = inv.get(m, 0)
+		var need: int = cost[m]
+		if have < need:
+			return false
+	return true
+
+
+## The most valuable recipe you can pay for (ties: the later one), or "" if none.
+static func best_affordable(inv: Dictionary) -> String:
+	var best := ""
+	var best_value := -1
+	for key: String in RECIPES:
+		if can_afford(key, inv) and item_value(key) >= best_value:
+			best = key
+			best_value = item_value(key)
+	return best
+
+
+## Material units still missing for a recipe.
+static func _missing_units(key: String, inv: Dictionary) -> int:
+	var cost: Dictionary = ITEMS[key]["cost"]
+	var total := 0
+	for m: String in cost:
+		var have: int = inv.get(m, 0)
+		var need: int = cost[m]
+		total += maxi(0, need - have)
+	return total
+
+
+## e.g. "need 2 stone, 1 copper", or "" if affordable.
+static func missing_text(key: String, inv: Dictionary) -> String:
+	var cost: Dictionary = ITEMS[key]["cost"]
+	var parts := PackedStringArray()
+	for m: String in MATERIALS:
+		if not cost.has(m):
+			continue
+		var have: int = inv.get(m, 0)
+		var need: int = cost[m]
+		if have < need:
+			parts.append("%d %s" % [need - have, m])
+	if parts.is_empty():
+		return ""
+	return "need " + ", ".join(parts)
+
+
+## The recipe closest to affordable: fewest missing units (ties: cheaper, then earlier).
+static func next_goal(inv: Dictionary) -> String:
+	var best := ""
+	var best_missing := 0
+	var best_value := 0
+	for key: String in RECIPES:
+		var missing := _missing_units(key, inv)
+		var value := item_value(key)
+		if best == "" or missing < best_missing or (missing == best_missing and value < best_value):
+			best = key
+			best_missing = missing
+			best_value = value
+	return best
 
 
 static func cost_text(key: String) -> String:

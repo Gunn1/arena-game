@@ -31,11 +31,13 @@ There's no lag compensation yet: joiners feel their ping on their own movement.
 
 | | Move | Jump | Aim | Mine | Place | Items (slot 1/2/3) | Craft |
 |---|---|---|---|---|---|---|---|
-| Keyboard + mouse | A / D | W or Space | mouse | left-click | right-click | Q / E / R | hold F |
-| Local P2 | J / L | I | K = down | U | O | 7 / 8 / 9 | hold H |
-| Controller | left stick / d-pad | A | right stick | RT | LT | X / Y / B | hold RB |
+| Keyboard + mouse | A / D | W or Space | mouse | left-click (hits players too) | right-click | Q / E / R | F |
+| Local P2 | J / L | I | K = down | U | O | 7 / 8 / 9 | H |
+| Controller | left stick / d-pad | A | right stick | RT | LT | X / Y / B | RB |
 
-- **Crafting:** hold craft, pick a recipe (hover with the mouse, scroll wheel, or left/right), let go to craft.
+- **Fighting:** the mine button hits a player in front of you. Each hit adds damage %; the higher it is, the farther hits launch you. Fall out within 4 s of a hit and the hitter gets the KO.
+- **The zone:** the arena crumbles from both edges toward the middle (about 50 s to close).
+- **Crafting:** one press crafts the most valuable item you can afford; your HUD shows what it'll make (or what you still need).
 - **Wall jump:** jump while touching a wall in the air; not off the same side twice in a row.
 - **Local games:** 2/3/4 on the title screen. P2 uses the right side of the keyboard unless a controller is plugged in; P3 and P4 need controllers.
 - M = mute, Esc = back.
@@ -51,7 +53,7 @@ There's no lag compensation yet: joiners feel their ping on their own movement.
 | Bomb | 1 stone, 1 copper, 1 crystal | 2 | blows a hole, flings players (you too) |
 | Laser | 2 stone, 1 crystal | 2 | cuts a 10-block line |
 
-Dirt and stone share a 15-block carry limit. Copper (orange specks) and crystal (cyan, deeper) are ores in the stone; every spawn gets the same amount nearby.
+Dirt and stone share a 15-block carry limit. Copper (orange specks) and crystal (cyan, deeper) are ores; every spawn gets at least 2 copper within 4 tiles and 1 crystal within 6, the same for everyone.
 
 ## Working on it
 

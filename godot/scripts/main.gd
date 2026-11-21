@@ -733,14 +733,19 @@ func _draw_player(p: Player) -> void:
 		var r := 1.3 * CELL
 		overlay.draw_arc(c, r, a - 0.9, a + 0.9, 16, Color(Color.WHITE, alpha), 4.0)
 		overlay.draw_arc(c, r - 3.0, a - 0.9, a + 0.9, 16, Color(p.color, alpha), 2.0)
-	if not p.crafting:
-		var tag := "P%d " % (p.index + 1)
-		var pct := "%d%%" % int(p.damage)
-		var tag_w := font.get_string_size(tag, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x
-		var pct_w := font.get_string_size(pct, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x
-		var sx := pos.x + w / 2.0 - (tag_w + pct_w) / 2.0
-		text(overlay, tag, Vector2(sx, pos.y - 5), 14, p.color)
-		text(overlay, pct, Vector2(sx + tag_w, pos.y - 5), 14, damage_color(p.damage))
+	var tag := "P%d " % (p.index + 1)
+	var pct := "%d%%" % int(p.damage)
+	var tag_w := font.get_string_size(tag, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x
+	var pct_w := font.get_string_size(pct, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x
+	var sx := pos.x + w / 2.0 - (tag_w + pct_w) / 2.0
+	text(overlay, tag, Vector2(sx, pos.y - 5), 14, p.color)
+	text(overlay, pct, Vector2(sx + tag_w, pos.y - 5), 14, damage_color(p.damage))
+	# "+Bomb" rising and fading above the tag for 0.8 s after a craft.
+	if p.craft_t > 0 and Items.ITEMS.has(p.last_crafted):
+		var rise := 20.0 * (1.0 - clampf(p.craft_t / 0.8, 0.0, 1.0))
+		var alpha := clampf(p.craft_t / 0.4, 0.0, 1.0)
+		var made: String = Items.ITEMS[p.last_crafted]["name"]
+		text(overlay, "+" + made, Vector2(pos.x + w / 2.0, pos.y - 22 - rise), 16, Color(p.color, alpha), true)
 
 
 func _draw_hud() -> void:
@@ -760,9 +765,6 @@ func _labels_for(i: int) -> Array:
 
 
 func _draw_game_hud() -> void:
-	for p: Player in sim.players:
-		if p.alive and p.crafting:
-			_draw_craft_menu(p)
 	hud.draw_rect(Rect2(0, 0, WIDTH, HUD_H), PANEL)
 	var slot_w := WIDTH / maxi(4, sim.players.size())
 	for p: Player in sim.players:
@@ -802,7 +804,8 @@ func _draw_game_hud() -> void:
 					hud.draw_rect(r, Color(0, 0, 0, 0.55))
 				hud.draw_rect(r, p.color, false, 1.0)
 			text(hud, labels[0][s], Vector2(r.position.x + 3, r.position.y + 11), 11, DIM)
-		text(hud, "crafting..." if p.crafting else "hold %s: craft" % labels[1], Vector2(col + Cfg.SLOTS * 36 + 4, 50), 13, p.color if p.crafting else DIM)
+		var hx: int = col + Cfg.SLOTS * 36 + 4
+		_draw_craft_hint(p, str(labels[1]), hx, x + slot_w - 6 - hx)
 
 	# Kill feed, newest last.
 	for i in sim.feed.size():
@@ -846,23 +849,49 @@ func _banner(title: String, sub: String, lines: Array = []) -> void:
 	text(hud, sub, Vector2(WIDTH / 2.0, top + 130 + extra), 20, DIM, true)
 
 
-func _draw_craft_menu(p: Player) -> void:
-	var layout := GameSim.menu_layout(p)
-	var panel: Rect2 = layout[0]
-	hud.draw_rect(panel, PANEL)
-	hud.draw_rect(panel, p.color, false, 2.0)
-	for i in Items.RECIPES.size():
-		var r: Rect2 = layout[1][i]
-		var k: String = Items.RECIPES[i]
-		hud.draw_rect(r, SLOT_BG)
-		Items.draw_icon(hud, k, r.grow(-3), p.color, not p.can_afford(k))
-		if i == p.recipe:
-			hud.draw_rect(r, Color.WHITE, false, 2.0)
-	var key: String = Items.RECIPES[p.recipe]
-	var ok := p.can_afford(key)
-	var cx := panel.get_center().x
-	text(hud, "%s: %s" % [Items.ITEMS[key]["name"], Items.cost_text(key)], Vector2(cx, panel.position.y + GameSim.MENU_BOX + 26), 15, INK, true)
-	text(hud, "let go to craft" if ok else "not enough materials", Vector2(cx, panel.position.y + GameSim.MENU_BOX + 43), 14, INK if ok else DANGER, true)
+func _text_w(s: String, size: int) -> float:
+	return font.get_string_size(s, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
+
+
+## Shortens s with ".." until it is at most max_w pixels wide.
+func _clip(s: String, size: int, max_w: float) -> String:
+	if _text_w(s, size) <= max_w:
+		return s
+	var cut := s
+	while cut.length() > 1 and _text_w(cut + "..", size) > max_w:
+		cut = cut.left(cut.length() - 1)
+	return cut.strip_edges() + ".."
+
+
+## What one press of the craft key makes, squeezed into max_w pixels right of the item slots.
+func _draw_craft_hint(p: Player, key_label: String, hx: int, max_w: int) -> void:
+	var lead := key_label + ": "
+	var lead_w := _text_w(lead, 13)
+	var best: String = Items.best_affordable(p.inv)
+	if best != "":
+		var item_name: String = Items.ITEMS[best]["name"]
+		text(hud, lead, Vector2(hx, 50), 13, DIM)
+		if lead_w + 18 + _text_w(item_name, 13) <= max_w:
+			Items.draw_icon(hud, best, Rect2(hx + lead_w, 37, 16, 16), p.color)
+			text(hud, item_name, Vector2(hx + lead_w + 18, 50), 13, p.color)
+		else:
+			text(hud, _clip(item_name, 13, max_w - lead_w), Vector2(hx + lead_w, 50), 13, p.color)
+		return
+	var goal: String = Items.next_goal(p.inv)
+	if goal == "":
+		text(hud, _clip(lead + "craft", 13, max_w), Vector2(hx, 50), 13, DIM)
+		return
+	var goal_name: String = Items.ITEMS[goal]["name"]
+	var missing: String = Items.missing_text(goal, p.inv)
+	var one_line := "%s%s - %s" % [lead, goal_name, missing]
+	if _text_w(one_line, 13) <= max_w:
+		text(hud, one_line, Vector2(hx, 50), 13, DIM)
+		return
+	# Too wide for one line: item on top, what's missing under it (smaller, "need " dropped if that helps).
+	text(hud, _clip(lead + goal_name, 13, max_w), Vector2(hx, 42), 13, DIM)
+	if _text_w(missing, 11) > max_w and missing.begins_with("need "):
+		missing = missing.substr(5)
+	text(hud, _clip(missing, 11, max_w), Vector2(hx, 57), 11, DIM)
 
 
 func _draw_title() -> void:
@@ -875,10 +904,10 @@ func _draw_title() -> void:
 		options = "H = host an online game     " + options
 	text(hud, options, Vector2(cx, 235), 22, INK, true)
 	var lines := [
-		"Controls:  A/D move   W or Space jump   mouse aims   left-click hit / mine   right-click place   Q/E/R items   hold F craft",
-		"Local P2:  J/L move   I jump   K aim down   U hit/mine   O place   7/8/9 items   hold H craft",
-		"Controller:  stick move   A jump   right stick aim   RT hit/mine   LT place   X/Y/B items   hold RB craft",
-		"Craft: hold the craft key, pick a recipe (mouse, wheel, or left/right), let go to craft.   M = mute",
+		"Controls:  A/D move   W or Space jump   mouse aims   left-click hit / mine   right-click place   Q/E/R items   F craft",
+		"Local P2:  J/L move   I jump   K aim down   U hit/mine   O place   7/8/9 items   H craft",
+		"Controller:  stick move   A jump   right stick aim   RT hit/mine   LT place   X/Y/B items   RB craft",
+		"Craft: one press makes the best item you can afford (shown on your HUD).   M = mute",
 	]
 	for i in lines.size():
 		text(hud, lines[i], Vector2(cx, 290 + i * 26), 15, DIM, true)

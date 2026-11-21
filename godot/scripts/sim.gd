@@ -4,10 +4,6 @@
 class_name GameSim
 extends RefCounted
 
-const MENU_BOX := 30
-const MENU_GAP := 5
-const MENU_W := 300
-
 var world := World.new()
 var players: Array = []           # Player
 var projectiles: Array = []       # {x, y, dir, dist, owner}
@@ -200,32 +196,6 @@ func hit_player(target: Player, attacker: Player, dir: Vector2, dmg: float, base
 	shake = maxf(shake, clampf(knock / 100.0, 0.06, 0.3))
 
 
-# --- crafting menu geometry (pixels; shared by drawing and mouse hover) ---------------
-
-static func menu_layout(p: Player) -> Array:
-	var row_w := Items.RECIPES.size() * (MENU_BOX + MENU_GAP) - MENU_GAP
-	var px := (p.x + Cfg.PLAYER_W / 2.0) * Cfg.CELL
-	var py := p.y * Cfg.CELL + Cfg.HUD_H
-	var h := MENU_BOX + 52
-	var panel := Rect2(px - MENU_W / 2.0, py - 8 - h, MENU_W, h)
-	panel.position.x = clampf(panel.position.x, 4, Cfg.WIDTH - MENU_W - 4)
-	panel.position.y = clampf(panel.position.y, Cfg.HUD_H + 4, Cfg.HEIGHT - h - 4)
-	var left := panel.get_center().x - row_w / 2.0
-	var rects := []
-	for i in Items.RECIPES.size():
-		rects.append(Rect2(left + i * (MENU_BOX + MENU_GAP), panel.position.y + 8, MENU_BOX, MENU_BOX))
-	return [panel, rects]
-
-
-func menu_hover(p: Player, mouse_tiles: Vector2) -> int:
-	var m := Vector2(mouse_tiles.x * Cfg.CELL, mouse_tiles.y * Cfg.CELL + Cfg.HUD_H)
-	var rects: Array = menu_layout(p)[1]
-	for i in rects.size():
-		if rects[i].grow_individual(2, 4, 2, 4).has_point(m):
-			return i
-	return -1
-
-
 # --- items ---------------------------------------------------------------------------
 
 ## Run an item's effect. Returns false if it couldn't be used (no charge spent).
@@ -354,7 +324,7 @@ func _explode(b: Dictionary) -> void:
 func snapshot() -> Dictionary:
 	var ps := []
 	for p: Player in players:
-		ps.append([p.x, p.y, p.facing, p.aim, p.alive, p.crafting, p.recipe, p.inv.duplicate(),
+		ps.append([p.x, p.y, p.facing, p.aim, p.alive, p.craft_t, p.last_crafted, p.inv.duplicate(),
 			p.slots.map(func(s): return null if s == null else [s["item"], s["charges"]]),
 			p.item_cd, p.wins, p.grapple,
 			p.damage, p.swing_t, p.hurt_t, p.kos, p.falls, p.dealt, p.stun])
@@ -407,8 +377,8 @@ func apply_snapshot(d: Dictionary) -> Array:
 	for i in ps.size():
 		var p: Player = players[i]
 		var s: Array = ps[i]
-		p.x = s[0]; p.y = s[1]; p.facing = s[2]; p.aim = s[3]; p.alive = s[4]; p.crafting = s[5]
-		p.recipe = s[6]; p.inv = s[7]; p.item_cd = s[9]; p.wins = s[10]; p.grapple = s[11]
+		p.x = s[0]; p.y = s[1]; p.facing = s[2]; p.aim = s[3]; p.alive = s[4]; p.craft_t = s[5]
+		p.last_crafted = s[6]; p.inv = s[7]; p.item_cd = s[9]; p.wins = s[10]; p.grapple = s[11]
 		p.damage = s[12]; p.swing_t = s[13]; p.hurt_t = s[14]; p.kos = s[15]; p.falls = s[16]
 		p.dealt = s[17]; p.stun = s[18]
 		p.slots = s[8].map(func(sl): return null if sl == null else {"item": sl[0], "charges": sl[1]})
