@@ -118,7 +118,8 @@ func _ready() -> void:
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	multiplayer.connected_to_server.connect(func(): notice = "")
-	multiplayer.connection_failed.connect(func(): leave_online("Couldn't connect"))
+	multiplayer.connection_failed.connect(func(): leave_online(
+		"Couldn't connect. Is the address right, and is the host on the same version (v%s)? Refresh or re-download to update." % Cfg.GAME_VERSION))
 	multiplayer.server_disconnected.connect(func(): leave_online("The host left"))
 
 	var args := OS.get_cmdline_user_args()
@@ -490,6 +491,7 @@ func start_local(count: int) -> void:
 
 func host_game(as_server: bool, port: int) -> void:
 	peer = WebSocketMultiplayerPeer.new()
+	peer.supported_protocols = PackedStringArray([Cfg.NET_PROTOCOL])
 	var err := peer.create_server(port)
 	if err != OK:
 		notice = "Can't host on port %d (error %d). Is another copy already hosting?" % [port, err]
@@ -509,6 +511,7 @@ func join_game(address: String) -> void:
 		return
 	peer = WebSocketMultiplayerPeer.new()
 	var url := _url_for(address)
+	peer.supported_protocols = PackedStringArray([Cfg.NET_PROTOCOL])
 	var err := peer.create_client(url)
 	if err != OK:
 		notice = "Couldn't connect to %s (error %d)" % [url, err]
@@ -1361,6 +1364,7 @@ func _draw_craft_hint(p: Player, key_label: String, hx: int, max_w: int) -> void
 
 
 func _draw_title() -> void:
+	text(hud, "v%s" % Cfg.GAME_VERSION, Vector2(10, HEIGHT - 12), 14, DIM)
 	var cx := WIDTH / 2.0
 	text(hud, "ARENA (working title)", Vector2(cx, 100), 64, INK, true)
 	text(hud, "Mine blocks and ore, craft items, and don't fall out of the map.", Vector2(cx, 145), 22, DIM, true)

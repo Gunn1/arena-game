@@ -103,5 +103,10 @@ const MAX_PLAYERS := 4
 
 # Online
 const NET_PORT := 7777
+# Game version. Online, the host and every player must match exactly: it's sent as the
+# WebSocket subprotocol, so a different version can't even connect (no silent breakage).
+# The release workflow checks that the git tag (vX.Y.Z) matches this.
+const GAME_VERSION := "0.5.2"
+const NET_PROTOCOL := "arena-" + GAME_VERSION
 
 const PLAYER_COLORS := [Color(1.0, 0.42, 0.42), Color(0.31, 0.66, 1.0), Color(1.0, 0.82, 0.25), Color(0.72, 0.48, 1.0)]

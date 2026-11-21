@@ -66,4 +66,4 @@ Dirt and stone share a 15-block carry limit. Copper (orange specks) and crystal 
 - `world.gd` map + crumbling, `player.gd` movement/mining/crafting, `sim.gd` rounds + items + snapshots, `main.gd` screens, input, drawing, networking, `sfx.gd` sounds made in code.
 - Tests: `godot --headless --path godot -s tests/test_sim.gd` (rules) and `godot/tests/net_test.sh` (online).
 - Every push to `main` runs the tests and publishes the web version (`.github/workflows/build.yml`).
-- New download: `git tag v0.2.0 && git push origin v0.2.0` builds Windows + Linux and makes a release.
+- New release: bump `GAME_VERSION` in `godot/scripts/config.gd`, then `git tag vX.Y.Z && git push origin vX.Y.Z` (CI checks they match). Online play requires the exact same version on both ends; a mismatched copy can't connect.
