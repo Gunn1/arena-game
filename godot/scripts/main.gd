@@ -405,10 +405,12 @@ func _remote_input(peer_id: int) -> Dictionary:
 
 
 func _bot_input() -> Dictionary:
-	# Test client: walk right for a second, then hold left, jumping now and then, mining as it goes.
+	# Test client: walk right for a second, dig straight down while standing still (the block under
+	# your feet is always solid, so the map always changes), walk left, jump now and then.
 	var t := sim.tick % 240
+	var still := (t >= 60 and t < 120) or t >= 180
 	return {"right": t < 60, "left": t >= 120 and t < 180, "jump": t % 50 == 0, "mine": true,
-		"up": false, "down": false, "place": false, "item1": false, "item2": false, "item3": false, "craft": false}
+		"up": false, "down": still, "place": false, "item1": false, "item2": false, "item3": false, "craft": false}
 
 
 func _unhandled_input(event: InputEvent) -> void:

@@ -7,10 +7,10 @@ GODOT=${1:-godot}
 cd "$(dirname "$0")/.."
 OUT=$(mktemp -d)
 PORT=$((20000 + RANDOM % 20000))
-"$GODOT" --headless --path . -- --server --port $PORT --autostart 2 --print-hash --quit-after 14 > "$OUT/server.txt" 2>&1 &
+"$GODOT" --headless --path . -- --server --port $PORT --autostart 2 --print-hash --quit-after 18 > "$OUT/server.txt" 2>&1 &
 sleep 2
-"$GODOT" --headless --path . -- --join 127.0.0.1:$PORT --bot --print-hash --quit-after 12 > "$OUT/c1.txt" 2>&1 &
-"$GODOT" --headless --path . -- --join 127.0.0.1:$PORT --bot --print-hash --quit-after 12 > "$OUT/c2.txt" 2>&1 &
+"$GODOT" --headless --path . -- --join 127.0.0.1:$PORT --bot --print-hash --quit-after 16 > "$OUT/c1.txt" 2>&1 &
+"$GODOT" --headless --path . -- --join 127.0.0.1:$PORT --bot --print-hash --quit-after 16 > "$OUT/c2.txt" 2>&1 &
 wait
 fail=0
 for c in c1 c2; do
