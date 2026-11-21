@@ -3,7 +3,6 @@ class_name World
 extends RefCounted
 
 enum { EMPTY, DIRT, STONE, PLACED, COPPER, CRYSTAL }
-const HARD := [STONE, COPPER, CRYSTAL]          # take two hits to mine
 const DROPS := {DIRT: "dirt", PLACED: "dirt", STONE: "stone", COPPER: "copper", CRYSTAL: "crystal"}
 const ORE_TILES := {"copper": COPPER, "crystal": CRYSTAL}
 const COLS := Cfg.COLS
@@ -12,7 +11,6 @@ const ROWS := Cfg.ROWS
 var grid := PackedByteArray()
 var spawns: Array = []            # Vector2i(col, ground_row) per player, left to right
 var spread := 0.0                 # how uneven the spawns are (0 = identical ground nearby)
-var cracked := {}                 # Vector2i -> true
 var warnings := {}                # Vector2i -> seconds until it breaks
 var elapsed := 0.0
 var arena_left := 0               # the arena is the columns [arena_left, arena_right)
@@ -25,7 +23,7 @@ var rng := RandomNumberGenerator.new()
 var broken: Array = []            # [x, y, tile, cause] since the game last drained it (for debris)
 var dirty: Array = []             # Vector2i tiles to redraw
 var record := false               # host: log changes to send to clients
-var changes: Array = []           # ["t", x, y, tile, cause] / ["c", x, y] crack / ["w", x, y] warning
+var changes: Array = []           # ["t", x, y, tile, cause] / ["w", x, y] warning
 var version := 0                  # bumps every new map
 
 
@@ -59,29 +57,17 @@ func set_tile(x: int, y: int, tile: int, cause := "mine") -> void:
 		warn(x, y)                                   # built outside the zone: it crumbles too
 	if tile == EMPTY:
 		broken.append([x, y, old, cause])
-		cracked.erase(pos)
 		warnings.erase(pos)
 	dirty.append(pos)
 
 
-## Mine a block. Returns the tile type if it broke, or -1 (nothing there, or a hard block just cracked).
-func hit(x: int, y: int) -> int:
+## Mine a block out. Returns the tile that was there, or -1 if it was already empty.
+func break_tile(x: int, y: int) -> int:
 	var tile := get_tile(x, y)
 	if tile == EMPTY:
 		return -1
-	var pos := Vector2i(x, y)
-	if tile in HARD and not cracked.has(pos):
-		crack(x, y)
-		return -1
-	set_tile(x, y, EMPTY)
+	set_tile(x, y, EMPTY, "mine")
 	return tile
-
-
-func crack(x: int, y: int) -> void:
-	cracked[Vector2i(x, y)] = true
-	dirty.append(Vector2i(x, y))
-	if record:
-		changes.append(["c", x, y])
 
 
 func warn(x: int, y: int) -> void:
@@ -165,7 +151,6 @@ func generate(seed_value: int, players: int) -> void:
 	_assign_types(grid)
 	_add_ores(grid)
 	_even_out_ores(grid, spawns)
-	cracked.clear()
 	warnings.clear()
 	broken.clear()
 	changes.clear()

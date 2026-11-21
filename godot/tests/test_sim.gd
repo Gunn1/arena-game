@@ -23,9 +23,12 @@ func _init() -> void:
 	test_maps()
 	test_wall_jump()
 	test_mouse_aim()
+	test_movement()
+	test_mining()
 	test_crafting()
 	test_items()
 	test_fighting()
+	test_hitstop()
 	test_zone()
 	test_matches()
 	print("all good" if failures == 0 else "%d FAILURES" % failures)
@@ -120,14 +123,15 @@ func test_wall_jump() -> void:
 	var start := p.x
 	for i in 10:
 		p.update(Cfg.DT, with({"right": true}), g)
-	check(start - p.x > 0.5, "wall jump kicks away from the wall")
+	check(start - p.x > 0.3, "wall jump kicks away from the wall (%.2f tiles)" % (start - p.x))
 
+	# Climbing: jump stays held (so JUMP_CUT doesn't kill each jump), re-pressed only at a wall.
 	p.spawn(0, 0)
 	p.x = 30 - Cfg.PLAYER_W
 	p.y = 25.0
 	var highest := p.y
 	for f in 240:
-		p.update(Cfg.DT, with({"right": true, "jump": f % 2 == 0}), g)
+		p.update(Cfg.DT, with({"right": true, "jump": climb_jump(g.world, p, f)}), g)
 		highest = minf(highest, p.y)
 	check(highest > 25.0 - 4, "a single wall can't be climbed")
 
@@ -138,10 +142,21 @@ func test_wall_jump() -> void:
 	p.y = 25.0
 	highest = p.y
 	for f in 240:
-		p.update(Cfg.DT, with({("right" if p.facing > 0 else "left"): true, "jump": f % 2 == 0}), g)
+		p.update(Cfg.DT, with({("right" if p.facing > 0 else "left"): true, "jump": climb_jump(g.world, p, f)}), g)
 		highest = minf(highest, p.y)
-	check(highest < 20, "a two-wall chimney can be climbed")
+	check(highest < 20, "a two-wall chimney can be climbed (reached row %.1f)" % highest)
 	print("wall jump: slide, kick, no single-wall climb, chimney climb OK (chimney reached row %.1f)" % highest)
+
+
+## True if a block is right beside p, on either side, level with its middle.
+func touching_wall(w: World, p: Player) -> bool:
+	var row := floori(p.centre().y)
+	return w.solid(floori(p.x - 0.05), row) or w.solid(floori(p.x + Cfg.PLAYER_W + 0.05), row)
+
+
+## Climbing input for jump: held in the air, toggled while at a wall so each wall gets a fresh press.
+func climb_jump(w: World, p: Player, f: int) -> bool:
+	return not (touching_wall(w, p) and f % 2 == 1)
 
 
 func test_mouse_aim() -> void:
@@ -175,6 +190,183 @@ func floor_sim() -> GameSim:
 func run(sim: GameSim, frames: int, inputs := []) -> void:
 	for i in frames:
 		sim.update(Cfg.DT, inputs if inputs else [IDLE, IDLE])
+
+
+## Did this frame's events include the named sound?
+func has_sound(sim: GameSim, snd: String) -> bool:
+	for e: Array in sim.events:
+		if e[0] == "snd" and e[1] == snd:
+			return true
+	return false
+
+
+## Jump from the test floor, holding jump for `hold` frames.
+## Returns [rise in tiles, frames going up, frames coming back down].
+func jump_arc(hold: int) -> Array:
+	var sim := floor_sim()
+	var p: Player = sim.players[0]
+	run(sim, 5)
+	var ground := p.y
+	var top := ground
+	var top_f := 0
+	var land_f := -1
+	for f in 90:
+		sim.update(Cfg.DT, [with({"jump": f < hold}), IDLE])
+		if p.y < top:
+			top = p.y
+			top_f = f
+		elif top < ground and p.on_ground:
+			land_f = f
+			break
+	return [ground - top, top_f + 1, land_f - top_f]
+
+
+func test_movement() -> void:
+	# Walking ramps up to MOVE_SPEED, and ground friction brings it back to 0.
+	var sim := floor_sim()
+	var p: Player = sim.players[0]
+	run(sim, 5)
+	check(p.on_ground, "settled on the test floor")
+	sim.update(Cfg.DT, [with({"right": true}), IDLE])
+	var first: float = p.walk_v
+	check(first > 0.0 and first < Cfg.MOVE_SPEED / 2.0, "walking starts slow (walk_v %.2f after 1 frame)" % first)
+	var up := 1
+	while p.walk_v < Cfg.MOVE_SPEED - 0.01 and up < 60:
+		sim.update(Cfg.DT, [with({"right": true}), IDLE])
+		up += 1
+	check(up * Cfg.DT <= 0.2, "reaches MOVE_SPEED within 0.2 s (%d frames)" % up)
+	check(p.walk_v <= Cfg.MOVE_SPEED + 0.01, "walk_v doesn't overshoot MOVE_SPEED (%.2f)" % p.walk_v)
+	var down := 0
+	while absf(p.walk_v) > 0.01 and down < 60:
+		run(sim, 1)
+		down += 1
+	check(down > 1 and down * Cfg.DT <= 0.15, "ground friction stops you within 0.15 s, not instantly (%d frames)" % down)
+
+	# Variable jump: tapping jump goes clearly lower than holding it. Falling is faster than rising.
+	var held: Array = jump_arc(90)
+	var tap: Array = jump_arc(1)
+	var held_rise: float = held[0]
+	var tap_rise: float = tap[0]
+	check(held_rise > 2.0, "held jump rises about 2.5 tiles (%.2f)" % held_rise)
+	check(tap_rise > 0.1 and tap_rise < 0.6 * held_rise, "tapped jump is lower (%.2f vs %.2f)" % [tap_rise, held_rise])
+	var up_f: int = held[1]
+	var down_f: int = held[2]
+	check(down_f > 0 and down_f < up_f, "falling is faster than rising (%d frames up, %d down)" % [up_f, down_f])
+
+	# Jump buffer: one press just before landing still jumps once you land.
+	sim = floor_sim()
+	p = sim.players[0]
+	run(sim, 5)
+	var floor_y := p.y
+	p.y = floor_y - 3.0
+	var press_f := -1
+	var rebound := false
+	for f in 90:
+		var late := press_f == -1 and p.vy > 0.0 and p.y > floor_y - 0.6
+		if late:
+			press_f = f
+		sim.update(Cfg.DT, [with({"jump": late}), IDLE])
+		if press_f >= 0 and f > press_f and p.vy < -5.0:
+			rebound = true
+			break
+	check(press_f >= 0 and rebound, "jump pressed just before landing jumps on landing (pressed frame %d)" % press_f)
+
+	# Hard landing sets land_t and plays "land"; a press long before landing isn't buffered.
+	sim = floor_sim()
+	p = sim.players[0]
+	run(sim, 5)
+	floor_y = p.y
+	p.y = floor_y - 6.0
+	var landed_t := -1.0
+	var land_snd := false
+	var went_up := false
+	for f in 90:
+		sim.events.clear()
+		sim.update(Cfg.DT, [with({"jump": f == 10}), IDLE])
+		went_up = went_up or p.vy < -1.0
+		if landed_t < 0.0 and f > 0 and p.on_ground:
+			landed_t = p.land_t
+			land_snd = has_sound(sim, "land")
+	check(landed_t > 0.0, "a hard landing sets land_t (%.2f)" % landed_t)
+	check(land_snd, "a hard landing plays \"land\"")
+	check(not went_up, "a jump pressed ~0.25 s before landing is not buffered")
+	print("movement: accel %d frames, friction %d frames, jump rise held %.2f / tap %.2f, buffer, landing OK"
+		% [up, down, held_rise, tap_rise])
+
+
+## Hold mine (plus `extra` input) until the tile at `at` breaks. Returns the frames it took, or -1.
+func hold_mine(sim: GameSim, at: Vector2i, extra: Dictionary, max_frames: int) -> int:
+	var inp := with(extra)
+	inp["mine"] = true
+	for f in max_frames:
+		sim.update(Cfg.DT, [inp, IDLE])
+		if not sim.world.solid(at.x, at.y):
+			return f + 1
+	return -1
+
+
+func test_mining() -> void:
+	# Hold to mine the block in front: it breaks after MINE_TIME[tile] and is collected.
+	var sim: GameSim
+	var p: Player
+	var took := {}
+	for tile: int in [World.DIRT, World.STONE]:
+		sim = floor_sim()
+		p = sim.players[0]
+		sim.world.grid[19 * Cfg.COLS + 16] = tile
+		var need: float = Cfg.MINE_TIME[tile]
+		var n := hold_mine(sim, Vector2i(16, 19), {}, 120)
+		took[tile] = n
+		check(n > 0 and n * Cfg.DT >= need - 0.05 and n * Cfg.DT <= need + 0.05,
+			"tile %d breaks after %.2f s of holding mine (took %d frames)" % [tile, need, n])
+		var m: String = World.DROPS[tile]
+		check(p.inv[m] == 1, "mined %s is collected (%s)" % [m, str(p.inv)])
+	check(took[World.STONE] > took[World.DIRT], "stone takes longer than dirt (%s)" % str(took))
+
+	# Letting go resets progress: pressing again starts from zero.
+	sim = floor_sim()
+	p = sim.players[0]
+	sim.world.grid[19 * Cfg.COLS + 16] = World.DIRT
+	run(sim, 8, [with({"mine": true}), IDLE])
+	var part: float = p.mine_progress
+	check(part > 0.2 and sim.world.solid(16, 19), "progress builds while holding mine (%.2f)" % part)
+	run(sim, 1)
+	check(p.mine_progress == 0.0 and sim.world.solid(16, 19), "releasing mine resets progress")
+	var dirt_time: float = Cfg.MINE_TIME[World.DIRT]
+	var again := hold_mine(sim, Vector2i(16, 19), {}, 120)
+	check(again * Cfg.DT >= dirt_time - 0.05, "mining again starts from zero (%d frames)" % again)
+
+	# Mouse in reach: the tile under it breaks, not the 8-way target. (17,20) is down-right on the
+	# floor; 8-way aim would pick (16,20).
+	sim = floor_sim()
+	p = sim.players[0]
+	var before := sim.world.block_count()
+	var n2 := hold_mine(sim, Vector2i(17, 20), {"mouse": Vector2(17.5, 20.5)}, 60)
+	check(n2 > 0, "mouse-aimed mining breaks the tile under the mouse")
+	check(sim.world.solid(16, 20) and sim.world.block_count() == before - 1, "...and only that tile")
+
+	# Mouse far away: whatever gets mined is within reach, along the line toward the mouse.
+	sim = floor_sim()
+	p = sim.players[0]
+	var c := p.centre()
+	var grid_before := sim.world.grid.duplicate()
+	var inp := with({"mine": true, "mouse": c + Vector2(6, 3)})
+	before = sim.world.block_count()
+	for f in 60:
+		sim.update(Cfg.DT, [inp, IDLE])
+		if sim.world.block_count() < before:
+			break
+	var gone: Array[Vector2i] = []
+	for i in grid_before.size():
+		if grid_before[i] != sim.world.grid[i]:
+			gone.append(Vector2i(i % Cfg.COLS, i / Cfg.COLS))
+	check(gone.size() == 1, "far mouse: exactly one tile mined (%d)" % gone.size())
+	var dist := -1.0
+	if gone.size() == 1:
+		dist = (Vector2(gone[0]) + Vector2(0.5, 0.5)).distance_to(c)
+		check(dist <= Cfg.REACH + 0.75, "far mouse mines within reach (%.2f tiles away)" % dist)
+	print("mining: dirt %s frames, stone %s, release resets, mouse exact tile, far mouse %.2f tiles OK"
+		% [str(took[World.DIRT]), str(took[World.STONE]), dist])
 
 
 ## A full inventory (all four materials) with the given amounts, the rest 0.
@@ -292,9 +484,10 @@ func test_items() -> void:
 	var sim := floor_sim()
 	var p: Player = sim.players[0]
 	sim.world.grid[19 * Cfg.COLS + 16] = World.COPPER
-	for i in 40:
+	# Copper takes MINE_TIME[copper] (0.55 s, ~34 frames) of holding mine.
+	for i in 45:
 		sim.update(Cfg.DT, [with({"mine": true}), IDLE])
-	check(p.inv["copper"] == 1, "mining ore (two hits) gives copper")
+	check(p.inv["copper"] == 1 and not sim.world.solid(16, 19), "holding mine on ore breaks it and gives copper")
 
 	sim = floor_sim()
 	p = sim.players[0]
@@ -396,11 +589,19 @@ func test_fighting() -> void:
 	check(q.stun > 0, "a swing stuns")
 	check(q.last_hit_by == 0, "the victim remembers who hit it")
 	check(p.dealt == Cfg.SWING_DAMAGE, "the hitter's damage dealt is counted")
-	check(sim.world.block_count() == blocks_before and sim.world.cracked.is_empty() and p.mine_cd > Cfg.MINE_COOLDOWN,
-		"a swing that hits doesn't also mine")
+	check(sim.world.block_count() == blocks_before and p.mine_progress == 0.0, "a swing that hits doesn't also mine")
 	var near_kvx := q.kvx
 	run(sim, 90)
 	var near := q.x - x0
+
+	# Same, with a solid tile as the mining target: a down swing at q aims at the floor under p.
+	var spike := fight_sim(0.0, 15.1)
+	var sp: Player = spike.players[0]
+	var sq: Player = spike.players[1]
+	spike.update(Cfg.DT, [with({"mine": true, "down": true}), IDLE])
+	check(sq.last_hit_by == 0, "a down swing hits the player beside you")
+	check(sp.mine_progress == 0.0 and spike.world.solid(15, 20), "a down swing that hits doesn't mine the floor (%.2f)"
+		% sp.mine_progress)
 
 	# Knockback grows with damage %.
 	sim = fight_sim(112.0, 15.1)
@@ -439,6 +640,34 @@ func test_fighting() -> void:
 	check(feed_has(sim, "fell"), "feed shows the fall")
 	print("fighting: swing damage/knock/stun/credit, no mine on hit, %.1fx farther at 112%% (kvx x%.2f), KO credit, plain fall OK"
 		% [far / near if near != 0.0 else 0.0, ratio])
+
+
+func test_hitstop() -> void:
+	# A hit freezes the whole sim for a moment; nothing moves until hitstop runs out.
+	var sim := fight_sim(0.0, 15.1)
+	var q: Player = sim.players[1]
+	sim.update(Cfg.DT, [with({"mine": true}), IDLE])
+	var light: float = sim.hitstop
+	check(q.last_hit_by == 0, "hitstop test: the swing lands")
+	check(light > 0.0, "a hit starts hitstop (%.3f)" % light)
+	var qx := q.x
+	var qy := q.y
+	run(sim, 2)
+	check(q.x == qx and q.y == qy, "nothing moves during hitstop")
+	var frozen := 2
+	while sim.hitstop > 0.0 and frozen < 30:
+		run(sim, 1)
+		frozen += 1
+	check(sim.hitstop <= 0.0, "hitstop runs out (%d frames)" % frozen)
+	run(sim, 3)
+	check(q.x > qx + 0.05, "after hitstop the victim flies (moved %.2f)" % (q.x - qx))
+
+	# Harder hits freeze longer, up to the cap.
+	sim = fight_sim(112.0, 15.1)
+	sim.update(Cfg.DT, [with({"mine": true}), IDLE])
+	var heavy: float = sim.hitstop
+	check(heavy > light and heavy <= 0.14 + 0.001, "heavier hit, longer hitstop (%.3f vs %.3f, max 0.14)" % [heavy, light])
+	print("hitstop: %.3f s light, %.3f s heavy, %d frames frozen, freeze then fly OK" % [light, heavy, frozen])
 
 
 func test_zone() -> void:
@@ -497,10 +726,13 @@ func test_matches() -> void:
 				for k in h:
 					if rng.randf() < 0.08:
 						h[k] = not h[k]
+			var frozen: bool = sim.hitstop > 0.0
 			sim.update(Cfg.DT, held.map(func(h): return h.duplicate()))
 			sim.events.clear()
 			rounds[sim.round_no] = true
 			frames += 1
+			if frozen:
+				round_start += 1                   # hit freezes pause the zone clock; don't count them
 			if sim.state == "outro" and last_state == "play":
 				lengths.append((frames - round_start) / 60.0)
 			if sim.round_no != last_round:

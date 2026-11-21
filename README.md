@@ -31,9 +31,9 @@ There's no lag compensation yet: joiners feel their ping on their own movement.
 
 | | Move | Jump | Aim | Mine | Place | Items (slot 1/2/3) | Craft |
 |---|---|---|---|---|---|---|---|
-| Keyboard + mouse | A / D | W or Space | mouse | left-click (hits players too) | right-click | Q / E / R | F |
-| Local P2 | J / L | I | K = down | U | O | 7 / 8 / 9 | H |
-| Controller | left stick / d-pad | A | right stick | RT | LT | X / Y / B | RB |
+| Keyboard + mouse | A / D | W or Space (tap = short hop) | mouse picks the block within reach | hold left-click (click a player to hit) | right-click | Q / E / R | F |
+| Local P2 | J / L | I | K = down | hold U | O | 7 / 8 / 9 | H |
+| Controller | left stick / d-pad | A | right stick | hold RT | LT | X / Y / B | RB |
 
 - **Fighting:** the mine button hits a player in front of you. Each hit adds damage %; the higher it is, the farther hits launch you. Fall out within 4 s of a hit and the hitter gets the KO.
 - **The zone:** the arena crumbles from both edges toward the middle (about 50 s to close).

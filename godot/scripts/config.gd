@@ -24,11 +24,21 @@ const WALL_SLIDE_SPEED := 4.0     # max fall speed while holding into a wall
 const WALL_COYOTE := 0.1
 const WALL_LOCK := 0.15           # after a wall jump, walking is ignored this long
 const KNOCK_DECAY := 5.0
+const ACCEL_GROUND := 70.0        # tiles/s^2 toward the walk speed (MOVE_SPEED * input)
+const ACCEL_AIR := 40.0
+const FRICTION := 80.0            # slowing down on the ground with no input (ACCEL_AIR * 0.5 in the air)
+const JUMP_BUFFER := 0.1          # a jump pressed this long before landing still happens
+const JUMP_CUT := 0.45            # letting go of jump while rising multiplies upward speed by this
+const FALL_GRAVITY := 1.5         # gravity multiplier while falling
+const LAND_SPEED := 12.0          # landing faster than this plays "land"
 
 # Blocks and items
-const MINE_COOLDOWN := 0.18
+const REACH := 2.5                # mouse targeting: tiles from player centre to tile centre
+# Seconds of holding "mine" to break a tile. Int keys match World's enum (config can't use
+# World's names): DIRT=1, STONE=2, PLACED=3, COPPER=4, CRYSTAL=5.
+const MINE_TIME := {1: 0.22, 2: 0.45, 3: 0.18, 4: 0.55, 5: 0.65}
 const PLACE_COOLDOWN := 0.12
-const CARRY_LIMIT := 15           # dirt + stone; stone and ores take 2 hits
+const CARRY_LIMIT := 15           # dirt + stone
 const ORE_LIMIT := 9
 const SLOTS := 3
 
@@ -62,6 +72,9 @@ const STUN_BASE := 0.1            # after a hit you can't walk for STUN_BASE + k
 const STUN_PER_KNOCK := 0.015
 const STUN_DECAY := 1.2           # knockback fades this slowly while stunned (KNOCK_DECAY otherwise)
 const KILL_CREDIT := 4.0          # fall within this many seconds of a hit and the hitter gets the KO
+const HITSTOP_BASE := 0.04        # the whole game freezes briefly on a hit: base + knock * per, capped
+const HITSTOP_PER_KNOCK := 0.003
+const HITSTOP_MAX := 0.14
 
 # Item strengths (costs, uses and cooldowns are in items.gd)
 const PUSH_SPEED := 24.0
