@@ -1,4 +1,4 @@
-## The tile map: random fair generation, mining, and crumbling.
+## The tile map: random fair generation, mining, and the zone that crumbles it from the edges in.
 class_name World
 extends RefCounted
 
@@ -15,7 +15,12 @@ var spread := 0.0                 # how uneven the spawns are (0 = identical gro
 var cracked := {}                 # Vector2i -> true
 var warnings := {}                # Vector2i -> seconds until it breaks
 var elapsed := 0.0
-var crumble_timer := 0.0
+var arena_left := 0               # the arena is the columns [arena_left, arena_right)
+var arena_right := COLS
+var zone_left := 0.0              # the zone's edges; everything outside crumbles
+var zone_right := float(COLS)
+var next_left := 0                # next column the left edge will crumble
+var next_right := COLS - 1        # next column the right edge will crumble
 var rng := RandomNumberGenerator.new()
 var broken: Array = []            # [x, y, tile, cause] since the game last drained it (for debris)
 var dirty: Array = []             # Vector2i tiles to redraw
@@ -50,6 +55,8 @@ func set_tile(x: int, y: int, tile: int, cause := "mine") -> void:
 	var pos := Vector2i(x, y)
 	if record:
 		changes.append(["t", x, y, tile, cause])
+	if tile != EMPTY and zone_started() and (x < next_left or x > next_right):
+		warn(x, y)                                   # built outside the zone: it crumbles too
 	if tile == EMPTY:
 		broken.append([x, y, old, cause])
 		cracked.erase(pos)
@@ -92,11 +99,20 @@ func block_count() -> int:
 	return n
 
 
-# --- crumbling --------------------------------------------------------------------------
+# --- the zone -----------------------------------------------------------------------------
 
-func crumble_interval() -> float:
-	var t := clampf((elapsed - Cfg.CRUMBLE_GRACE) / Cfg.CRUMBLE_RAMP, 0.0, 1.0)
-	return Cfg.CRUMBLE_START + (Cfg.CRUMBLE_END - Cfg.CRUMBLE_START) * t
+func zone_started() -> bool:
+	return elapsed >= Cfg.ZONE_GRACE
+
+
+## How far each edge has moved in, in columns. Starts slow, ends 3x faster, meets in the
+## middle after ZONE_CLOSE_TIME seconds.
+func zone_progress() -> float:
+	var t := maxf(0.0, elapsed - Cfg.ZONE_GRACE)
+	var half := (arena_right - arena_left) / 2.0
+	var v0 := half / (2.0 * Cfg.ZONE_CLOSE_TIME)
+	var accel := 2.0 * v0 / Cfg.ZONE_CLOSE_TIME
+	return minf(half, v0 * t + 0.5 * accel * t * t)
 
 
 func update(dt: float) -> void:
@@ -105,29 +121,31 @@ func update(dt: float) -> void:
 		warnings[pos] -= dt
 		if warnings[pos] <= 0.0:
 			set_tile(pos.x, pos.y, EMPTY, "crumble")
-	if elapsed < Cfg.CRUMBLE_GRACE:
-		return
-	crumble_timer -= dt
-	while crumble_timer <= 0.0:
-		start_crumble()
-		crumble_timer += crumble_interval()
+	var s := zone_progress()
+	zone_left = arena_left + s
+	zone_right = arena_right - s
+	# Each column the edge passes starts to crumble (with the usual shake warning first).
+	while next_left < floori(zone_left) and next_left <= next_right:
+		_warn_column(next_left)
+		next_left += 1
+	while next_right >= ceili(zone_right) and next_right >= next_left:
+		_warn_column(next_right)
+		next_right -= 1
 
 
-func start_crumble() -> void:
-	var choices := []
+func _warn_column(x: int) -> void:
 	for y in ROWS:
-		for x in COLS:
-			if grid[y * COLS + x] != EMPTY and not warnings.has(Vector2i(x, y)):
-				choices.append(Vector2i(x, y))
-	if choices:
-		var pick: Vector2i = choices[rng.randi_range(0, choices.size() - 1)]
-		warn(pick.x, pick.y)
+		if grid[y * COLS + x] != EMPTY and not warnings.has(Vector2i(x, y)):
+			warn(x, y)
 
 
 # --- generation --------------------------------------------------------------------------
 
 func generate(seed_value: int, players: int) -> void:
 	rng.seed = seed_value
+	var width := mini(COLS, Cfg.ARENA_BASE + Cfg.ARENA_PER_PLAYER * players)
+	arena_left = (COLS - width) / 2
+	arena_right = arena_left + width
 	var best := []
 	for attempt in 40:
 		var g := _random_terrain()
@@ -153,7 +171,10 @@ func generate(seed_value: int, players: int) -> void:
 	changes.clear()
 	dirty.clear()
 	elapsed = 0.0
-	crumble_timer = Cfg.CRUMBLE_START
+	zone_left = arena_left
+	zone_right = arena_right
+	next_left = 0                                    # columns outside the arena go as soon as the zone starts,
+	next_right = COLS - 1                            # so blocks built out there don't survive
 	version += 1
 
 
@@ -187,7 +208,7 @@ func _random_terrain() -> PackedByteArray:
 	var g := PackedByteArray()
 	g.resize(COLS * ROWS)
 	for y in range(Cfg.TOP_ROW, ROWS - 2):
-		for x in range(2, COLS - 2):
+		for x in range(arena_left + 1, arena_right - 1):
 			var depth := float(y - Cfg.TOP_ROW) / (ROWS - Cfg.TOP_ROW)
 			if big[y * COLS + x] * 0.7 + small[y * COLS + x] * 0.3 + depth * 0.1 > 0.55:
 				g[y * COLS + x] = DIRT
@@ -249,7 +270,7 @@ func _fill_ratio(g: PackedByteArray) -> float:
 	for t in g:
 		if t != EMPTY:
 			n += 1
-	return float(n) / (COLS * (ROWS - Cfg.TOP_ROW))
+	return float(n) / ((arena_right - arena_left) * (ROWS - Cfg.TOP_ROW))
 
 
 ## Top 3 tiles of each column are dirt, deeper is stone.
@@ -281,51 +302,43 @@ func _shuffle(a: Array) -> void:
 		a[j] = t
 
 
-## Choose spawns that are spread out and have about the same ground around them.
+## One spawn near each evenly spaced slot across the arena (so the closing edges treat
+## mirrored players the same), choosing the combination with the most even ground nearby.
 ## Returns [spawns, spread] or [] if impossible.
 func _pick_spawns(g: PackedByteArray, players: int) -> Array:
-	var spots := []
-	for x in range(3, COLS - 3):                     # stay off the deadly side edges
-		for y in ROWS:
-			if g[y * COLS + x] != EMPTY:
-				if y >= 2 and _blocks_near(g, x, y) >= Cfg.MIN_NEAR:
-					spots.append(Vector2i(x, y))     # top block of the column, open sky above
-				break
-	var near := {}
-	for s in spots:
-		near[s] = _blocks_near(g, s.x, s.y)
-	var min_gap := COLS / (players + 1)
+	var width := arena_right - arena_left
+	var candidates := []                             # per slot: spots within 2 columns of it
+	for i in players:
+		var slot := arena_left + roundi(width * (i + 1.0) / (players + 1.0))
+		var spots := []
+		for x in range(slot - 2, slot + 3):
+			for y in ROWS:
+				if g[y * COLS + x] != EMPTY:
+					if y >= 2 and _blocks_near(g, x, y) >= Cfg.MIN_NEAR:
+						spots.append(Vector2i(x, y))   # top block of the column, open sky above
+					break
+		if spots.is_empty():
+			return []
+		candidates.append(spots)
 	var best := []
 	var best_spread := 2.0
-	for attempt in 400:
-		var order := spots.duplicate()
-		_shuffle(order)
+	for attempt in 200:
 		var pick := []
-		for s in order:
-			var ok := true
-			for o in pick:
-				if absi(s.x - o.x) < min_gap:
-					ok = false
-					break
-			if ok:
-				pick.append(s)
-				if pick.size() == players:
-					break
-		if pick.size() < players:
-			continue
 		var lo := 1 << 30
 		var hi := 0
-		for s in pick:
-			lo = mini(lo, near[s])
-			hi = maxi(hi, near[s])
-		var s_spread := float(hi - lo) / hi
-		if s_spread < best_spread:
-			pick.sort_custom(func(a, b): return a.x < b.x)
+		for spots in candidates:
+			var s: Vector2i = spots[rng.randi_range(0, spots.size() - 1)]
+			pick.append(s)
+			var n := _blocks_near(g, s.x, s.y)
+			lo = mini(lo, n)
+			hi = maxi(hi, n)
+		var spread_now := float(hi - lo) / hi
+		if spread_now < best_spread:
 			best = pick
-			best_spread = s_spread
-		if s_spread <= Cfg.FAIR_SPREAD / 3.0:
+			best_spread = spread_now
+		if spread_now <= Cfg.FAIR_SPREAD / 3.0:
 			break
-	return [] if best.is_empty() else [best, best_spread]
+	return [best, best_spread]
 
 
 ## Copper through the stone, crystal in the deeper stone.

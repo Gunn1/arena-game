@@ -41,18 +41,33 @@ const MIN_NEAR := 35
 const ORE_RADIUS := 7             # every spawn gets the same ore within this many tiles...
 const ORE_MIN := {"copper": 3, "crystal": 2}   # ...and at least this much
 
-# Crumbling
-const CRUMBLE_GRACE := 3.0
-const CRUMBLE_WARN := 1.0
-const CRUMBLE_START := 0.45
-const CRUMBLE_END := 0.05
-const CRUMBLE_RAMP := 60.0
+# Arena: 40 tiles wide for 2 players, +10 per extra player (60 = full screen for 4)
+const ARENA_BASE := 20
+const ARENA_PER_PLAYER := 10
+
+# The zone: the map crumbles from both edges toward the middle
+const ZONE_GRACE := 4.0           # seconds after "go" before the edges start closing
+const ZONE_CLOSE_TIME := 50.0     # seconds for the edges to meet in the middle (speeds up as it goes)
+const CRUMBLE_WARN := 1.0         # a block shakes this long before it breaks
+
+# Fighting (Smash-style): hits add damage %, and knockback grows with damage %
+const SWING_COOLDOWN := 0.35
+const SWING_DAMAGE := 8.0
+const SWING_KNOCK := 9.0          # knockback speed at 0%
+const SWING_REACH := 1.0          # hit box sits this far in front of you...
+const SWING_BOX := Vector2(1.5, 1.7)   # ...and is this big
+const KNOCK_GROWTH := 60.0        # knockback = base * (1 + damage / KNOCK_GROWTH): 2x at 60%, 3x at 120%
+const MAX_DAMAGE := 300.0
+const STUN_BASE := 0.1            # after a hit you can't walk for STUN_BASE + knock * STUN_PER_KNOCK seconds
+const STUN_PER_KNOCK := 0.015
+const STUN_DECAY := 1.2           # knockback fades this slowly while stunned (KNOCK_DECAY otherwise)
+const KILL_CREDIT := 4.0          # fall within this many seconds of a hit and the hitter gets the KO
 
 # Item strengths (costs, uses and cooldowns are in items.gd)
 const PUSH_SPEED := 24.0
 const PUSH_RANGE := 12.0
-const PUSH_KNOCK := 17.0
-const PUSH_LIFT := 7.0
+const PUSH_KNOCK := 14.0
+const PUSH_DAMAGE := 12.0
 const LASER_LENGTH := 10
 const LASER_SHOW := 0.25
 const BOOST_SPEED := 17.0
@@ -63,7 +78,8 @@ const BOMB_THROW := 13.0
 const BOMB_FUSE := 1.3
 const BOMB_RADIUS := 2.3
 const BOMB_BLAST := 4.0
-const BOMB_KNOCK := 18.0
+const BOMB_KNOCK := 16.0
+const BOMB_DAMAGE := 18.0
 const PLATFORM_WIDTH := 5
 
 # Rounds

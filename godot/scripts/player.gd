@@ -35,6 +35,18 @@ var place_cd := 0.0
 var item_cd := 0.0
 var held := {}                    # last frame's input, for "just pressed"
 var alive := true
+# Fighting
+var damage := 0.0                 # Smash-style %: more damage = hits launch you farther
+var stun := 0.0                   # can't walk while > 0 (you're flying from a hit)
+var swing_cd := 0.0
+var swing_t := 0.0                # > 0 while the swing is drawn
+var hurt_t := 0.0                 # > 0 while the hit flash is drawn
+var last_hit_by := -1             # player index, for KO credit
+var last_hit_at := -100.0         # round time of that hit
+# Match stats (kept across rounds)
+var kos := 0
+var falls := 0
+var dealt := 0.0
 
 
 func _init(i: int) -> void:
@@ -67,6 +79,13 @@ func spawn(col: int, ground_row: int) -> void:
 	item_cd = 0.0
 	held = {}
 	alive = true
+	damage = 0.0
+	stun = 0.0
+	swing_cd = 0.0
+	swing_t = 0.0
+	hurt_t = 0.0
+	last_hit_by = -1
+	last_hit_at = -100.0
 
 
 func pressed(inp: Dictionary, action: String) -> bool:
@@ -181,6 +200,9 @@ func update(dt: float, inp: Dictionary, game) -> void:
 	mine_cd = maxf(0.0, mine_cd - dt)
 	place_cd = maxf(0.0, place_cd - dt)
 	item_cd = maxf(0.0, item_cd - dt)
+	swing_cd = maxf(0.0, swing_cd - dt)
+	swing_t = maxf(0.0, swing_t - dt)
+	hurt_t = maxf(0.0, hurt_t - dt)
 
 	var mouse = inp.get("mouse")
 	# Holding craft opens the menu. Without a mouse, left/right pick the recipe, so you stop walking.
@@ -214,7 +236,8 @@ func update(dt: float, inp: Dictionary, game) -> void:
 
 func _move_body(dt: float, dx: int, inp: Dictionary, game) -> void:
 	var world: World = game.world
-	kvx *= exp(-Cfg.KNOCK_DECAY * dt)
+	stun = maxf(0.0, stun - dt)
+	kvx *= exp(-(Cfg.STUN_DECAY if stun > 0 else Cfg.KNOCK_DECAY) * dt)
 	if absf(kvx) < 0.1:
 		kvx = 0.0
 	coyote = Cfg.COYOTE if on_ground else maxf(0.0, coyote - dt)
@@ -253,7 +276,7 @@ func _move_body(dt: float, dx: int, inp: Dictionary, game) -> void:
 			var side_x := x if wall_dir < 0 else x + W
 			game.burst(Vector2(side_x, y + H * 0.7), Color(0.78, 0.78, 0.86), 8, 4.0, 0.3, 3)
 
-	var walk := 0 if wall_lock > 0 else dx
+	var walk := 0 if wall_lock > 0 or stun > 0 else dx
 	move(world, (walk * Cfg.MOVE_SPEED + kvx) * dt, 0.0)
 	on_ground = false
 	move(world, 0.0, vy * dt)
@@ -310,6 +333,13 @@ func _use_hands(inp: Dictionary, game) -> void:
 			if slot["charges"] <= 0:
 				slots[i] = null
 
+	# One button: swing at a player in front of you, or mine the block you're aiming at.
+	if inp.get("mine", false) and swing_cd == 0.0:
+		var victims: Array = game.swing_targets(self)
+		if victims:
+			game.melee(self, victims)
+			swing_cd = Cfg.SWING_COOLDOWN
+			mine_cd = Cfg.SWING_COOLDOWN
 	if inp.get("mine", false) and mine_cd == 0.0:
 		var t := target(world, false)
 		if world.solid(t.x, t.y):

@@ -650,6 +650,7 @@ func _draw_overlay() -> void:
 		var flash := 0.5 + 0.5 * sin(time * 30.0)
 		var c: Color = TILE_COLORS[t].lerp(DANGER, 0.25 + 0.5 * (1.0 - left) * flash)
 		overlay.draw_rect(Rect2(pos.x * CELL + randi_range(-j, j), pos.y * CELL, CELL, CELL), c)
+	_draw_zone()
 	for p: Player in sim.players:
 		if p.alive and p.grapple != null:
 			overlay.draw_line(p.centre() * CELL, Vector2(p.grapple.x, p.grapple.y) * CELL, Color(0.86, 0.86, 0.9), 2.0)
@@ -678,6 +679,39 @@ func _draw_overlay() -> void:
 	overlay.draw_rect(Rect2(WIDTH - 3, 0, 3, Cfg.ROWS * CELL), DANGER)
 
 
+## Outside the arena is dark; between the arena edge and the zone edge is crumbling (red).
+func _draw_zone() -> void:
+	var w := sim.world
+	var map_h := Cfg.ROWS * CELL
+	var al := w.arena_left * CELL
+	var ar := w.arena_right * CELL
+	var shade := Color(0, 0, 0, 0.35)
+	if al > 0:
+		overlay.draw_rect(Rect2(0, 0, al, map_h), shade)
+	if ar < WIDTH:
+		overlay.draw_rect(Rect2(ar, 0, WIDTH - ar, map_h), shade)
+	var zl := w.zone_left * CELL
+	var zr := w.zone_right * CELL
+	var started := w.zone_started()
+	if started:
+		var red := Color(DANGER, 0.18)
+		if zl > al:
+			overlay.draw_rect(Rect2(al, 0, zl - al, map_h), red)
+		if zr < ar:
+			overlay.draw_rect(Rect2(zr, 0, ar - zr, map_h), red)
+	var line := Color(DANGER, 0.6 + 0.4 * sin(time * 8.0)) if started else Color(DANGER, 0.35)
+	overlay.draw_rect(Rect2(zl - 1.5, 0, 3, map_h), line)
+	overlay.draw_rect(Rect2(zr - 1.5, 0, 3, map_h), line)
+
+
+## White at 0%, yellow at 60%, red at 120% and up.
+func damage_color(d: float) -> Color:
+	var yellow := Color(1.0, 0.85, 0.25)
+	if d < 60.0:
+		return Color.WHITE.lerp(yellow, clampf(d / 60.0, 0.0, 1.0))
+	return yellow.lerp(DANGER, clampf((d - 60.0) / 60.0, 0.0, 1.0))
+
+
 func _draw_player(p: Player) -> void:
 	var t := p.target(sim.world, false)
 	if sim.world.solid(t.x, t.y) or p.blocks() > 0:
@@ -685,14 +719,28 @@ func _draw_player(p: Player) -> void:
 	var pos := Vector2(p.x, p.y) * CELL
 	var w := Cfg.PLAYER_W * CELL
 	var h := Cfg.PLAYER_H * CELL
-	overlay.draw_rect(Rect2(pos + Vector2(0, 3), Vector2(w, h - 3)), p.color.darkened(0.35))
-	overlay.draw_rect(Rect2(pos, Vector2(w, h - 4)), p.color)
+	var body := Color.WHITE if p.hurt_t > 0 else p.color
+	overlay.draw_rect(Rect2(pos + Vector2(0, 3), Vector2(w, h - 3)), body.darkened(0.35))
+	overlay.draw_rect(Rect2(pos, Vector2(w, h - 4)), body)
 	var eye_x := pos.x + w / 2.0 + p.facing * 3
 	for ex in [eye_x - 4, eye_x + 3]:
 		overlay.draw_rect(Rect2(ex - 2, pos.y + 6, 4, 6), Color.WHITE)
 		overlay.draw_rect(Rect2(ex - 1 + p.facing, pos.y + 8, 2, 3), Color.BLACK)
+	if p.swing_t > 0:
+		var c := p.centre() * CELL
+		var a := Vector2(p.aim).angle()
+		var alpha := clampf(p.swing_t / 0.12, 0.0, 1.0)
+		var r := 1.3 * CELL
+		overlay.draw_arc(c, r, a - 0.9, a + 0.9, 16, Color(Color.WHITE, alpha), 4.0)
+		overlay.draw_arc(c, r - 3.0, a - 0.9, a + 0.9, 16, Color(p.color, alpha), 2.0)
 	if not p.crafting:
-		text(overlay, "P%d" % (p.index + 1), Vector2(pos.x + w / 2.0, pos.y - 5), 14, p.color, true)
+		var tag := "P%d " % (p.index + 1)
+		var pct := "%d%%" % int(p.damage)
+		var tag_w := font.get_string_size(tag, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x
+		var pct_w := font.get_string_size(pct, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x
+		var sx := pos.x + w / 2.0 - (tag_w + pct_w) / 2.0
+		text(overlay, tag, Vector2(sx, pos.y - 5), 14, p.color)
+		text(overlay, pct, Vector2(sx + tag_w, pos.y - 5), 14, damage_color(p.damage))
 
 
 func _draw_hud() -> void:
@@ -720,20 +768,26 @@ func _draw_game_hud() -> void:
 	for p: Player in sim.players:
 		var x: int = 10 + p.index * slot_w
 		var you: bool = (mode == "client" and p.index == my_index) or (mode == "host" and p.index == 0)
-		text(hud, "P%d" % (p.index + 1) + (" (you)" if you else ""), Vector2(x, 26), 20, p.color if p.alive else DIM)
+		# Name, with "you"/"out" under it so the damage % fits beside it.
+		text(hud, "P%d" % (p.index + 1), Vector2(x, 26), 20, p.color if p.alive else DIM)
 		if not p.alive:
 			text(hud, "out", Vector2(x + 2, 44), 14, DIM)
+		elif you:
+			text(hud, "you", Vector2(x + 2, 44), 12, DIM)
+		text(hud, "%d%%" % int(p.damage), Vector2(x + 30, 27), 22, damage_color(p.damage) if p.alive else DIM)
+		if p.kos > 0:
+			text(hud, "KO %d" % p.kos, Vector2(x + 32, 44), 12, INK)
 		for r in Cfg.ROUNDS_TO_WIN:
 			var c := Vector2(x + 7 + r * 15, 54)
 			if r < p.wins:
 				hud.draw_circle(c, 5.0, p.color)
 			else:
 				hud.draw_arc(c, 5.0, 0, TAU, 12, p.color, 2.0)
-		var col: int = x + 66
+		var col: int = x + 88
 		var full: bool = p.blocks() >= Cfg.CARRY_LIMIT
 		for n in Items.MATERIALS.size():
 			var m: String = Items.MATERIALS[n]
-			var mx: int = col + n * 50
+			var mx: int = col + n * 46
 			hud.draw_rect(Rect2(mx, 9, 12, 12), Items.MATERIAL_COLORS[m])
 			text(hud, str(p.inv[m]), Vector2(mx + 16, 20), 15, DANGER if full and (m == "dirt" or m == "stone") else INK)
 		var labels := _labels_for(p.index)
@@ -750,6 +804,12 @@ func _draw_game_hud() -> void:
 			text(hud, labels[0][s], Vector2(r.position.x + 3, r.position.y + 11), 11, DIM)
 		text(hud, "crafting..." if p.crafting else "hold %s: craft" % labels[1], Vector2(col + Cfg.SLOTS * 36 + 4, 50), 13, p.color if p.crafting else DIM)
 
+	# Kill feed, newest last.
+	for i in sim.feed.size():
+		var line: Array = sim.feed[i]
+		var ttl: float = line[1]
+		text(hud, str(line[0]), Vector2(WIDTH / 2.0, HUD_H + 26 + i * 24), 18, Color(INK, clampf(ttl, 0.0, 1.0)), true)
+
 	var me := _my_player()
 	if me and sim.state in ["intro", "play", "outro"] and Input.mouse_mode == Input.MOUSE_MODE_HIDDEN:
 		var m := get_global_mouse_position()
@@ -759,19 +819,31 @@ func _draw_game_hud() -> void:
 			hud.draw_line(m + d * 4, m + d * 12, me.color, 2.0)
 
 	match sim.state:
-		"intro": _banner("Round %d" % sim.round_no, "Mine ore, hold craft to make items, last one standing wins")
+		"intro": _banner("Round %d" % sim.round_no, "Hit players to raise their %. Higher % = they fly farther. Knock them out!")
 		"outro": _banner(sim.message, "   ".join(sim.players.map(func(p): return "P%d: %d" % [p.index + 1, p.wins])) + "   (first to %d)" % Cfg.ROUNDS_TO_WIN)
 		"match_over":
 			var sub := "Enter = rematch    Esc = menu"
 			if mode == "client" and not dedicated:
 				sub = "Waiting for the host    Esc = leave"
-			_banner(sim.message, sub)
+			var stats: Array = []
+			for p: Player in sim.players:
+				var s := "P%d   %d KO%s   %d fall%s   %d%% dealt" % [p.index + 1, p.kos, "" if p.kos == 1 else "s",
+					p.falls, "" if p.falls == 1 else "s", int(p.dealt)]
+				stats.append([s, p.color])
+			_banner(sim.message, sub, stats)
 
 
-func _banner(title: String, sub: String) -> void:
-	hud.draw_rect(Rect2(0, HEIGHT / 2.0 - 80, WIDTH, 160), Color(0, 0, 0, 0.6))
-	text(hud, title, Vector2(WIDTH / 2.0, HEIGHT / 2.0 + 5), 60, INK, true)
-	text(hud, sub, Vector2(WIDTH / 2.0, HEIGHT / 2.0 + 50), 20, DIM, true)
+## lines: [text, color] pairs shown between the title and the subtitle.
+func _banner(title: String, sub: String, lines: Array = []) -> void:
+	var extra := lines.size() * 30 + (10 if lines.size() > 0 else 0)
+	var top := HEIGHT / 2.0 - 80 - extra / 2.0
+	hud.draw_rect(Rect2(0, top, WIDTH, 160 + extra), Color(0, 0, 0, 0.6))
+	text(hud, title, Vector2(WIDTH / 2.0, top + 85), 60, INK, true)
+	for i in lines.size():
+		var line: Array = lines[i]
+		var c: Color = line[1]
+		text(hud, str(line[0]), Vector2(WIDTH / 2.0, top + 128 + i * 30), 20, c, true)
+	text(hud, sub, Vector2(WIDTH / 2.0, top + 130 + extra), 20, DIM, true)
 
 
 func _draw_craft_menu(p: Player) -> void:
@@ -797,15 +869,15 @@ func _draw_title() -> void:
 	var cx := WIDTH / 2.0
 	text(hud, "ARENA (working title)", Vector2(cx, 100), 64, INK, true)
 	text(hud, "Mine blocks and ore, craft items, and don't fall out of the map.", Vector2(cx, 145), 22, DIM, true)
-	text(hud, "Blocks shake, then crumble, faster and faster. Last one standing wins.", Vector2(cx, 175), 22, DIM, true)
+	text(hud, "Hits raise damage %: the higher it is, the farther you fly. The edges crumble inward.", Vector2(cx, 175), 22, DIM, true)
 	var options := "J = join an online game     2 / 3 / 4 = local players on this device"
 	if not OS.has_feature("web"):
 		options = "H = host an online game     " + options
 	text(hud, options, Vector2(cx, 235), 22, INK, true)
 	var lines := [
-		"Controls:  A/D move   W or Space jump   mouse aims   left-click mine   right-click place   Q/E/R items   hold F craft",
-		"Local P2:  J/L move   I jump   K aim down   U mine   O place   7/8/9 items   hold H craft",
-		"Controller:  stick move   A jump   right stick aim   RT mine   LT place   X/Y/B items   hold RB craft",
+		"Controls:  A/D move   W or Space jump   mouse aims   left-click hit / mine   right-click place   Q/E/R items   hold F craft",
+		"Local P2:  J/L move   I jump   K aim down   U hit/mine   O place   7/8/9 items   hold H craft",
+		"Controller:  stick move   A jump   right stick aim   RT hit/mine   LT place   X/Y/B items   hold RB craft",
 		"Craft: hold the craft key, pick a recipe (mouse, wheel, or left/right), let go to craft.   M = mute",
 	]
 	for i in lines.size():

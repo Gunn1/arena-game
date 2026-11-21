@@ -20,6 +20,8 @@ var round_no := 0
 var message := ""
 var shake := 0.0
 var tick := 0
+var round_time := 0.0             # seconds since this round's "go" (for KO credit)
+var feed: Array = []              # [text, ttl] kill feed lines
 var rng := RandomNumberGenerator.new()
 
 
@@ -35,6 +37,10 @@ func burst(pos: Vector2, color: Color, count: int, speed: float, life := 0.6, si
 	events.append(["pt", pos, color, count, speed, life, size, up])
 
 
+func add_feed(text: String) -> void:
+	feed.append([text, 3.0])
+
+
 # --- match flow ----------------------------------------------------------------------
 
 func start_match(count: int) -> void:
@@ -42,6 +48,7 @@ func start_match(count: int) -> void:
 	for i in count:
 		players.append(Player.new(i))
 	round_no = 0
+	feed.clear()
 	new_round()
 
 
@@ -53,6 +60,7 @@ func new_round() -> void:
 	projectiles.clear()
 	bombs.clear()
 	beams.clear()
+	round_time = 0.0
 	state = "intro"
 	timer = Cfg.ROUND_INTRO
 
@@ -77,6 +85,9 @@ func end_round() -> void:
 func update(dt: float, inputs: Array) -> void:
 	tick += 1
 	shake = maxf(0.0, shake - dt)
+	for line in feed:
+		line[1] -= dt
+	feed = feed.filter(func(line): return line[1] > 0)
 	if state == "intro":
 		timer -= dt
 		if timer <= 0:
@@ -85,6 +96,7 @@ func update(dt: float, inputs: Array) -> void:
 		return
 	if state != "play" and state != "outro":
 		return
+	round_time += dt
 
 	world.update(dt)
 	for i in players.size():
@@ -116,6 +128,13 @@ func update(dt: float, inputs: Array) -> void:
 
 
 func _on_death(p: Player) -> void:
+	if p.last_hit_by >= 0 and round_time - p.last_hit_at <= Cfg.KILL_CREDIT:
+		var killer: Player = players[p.last_hit_by]
+		killer.kos += 1
+		add_feed("P%d knocked out P%d" % [killer.index + 1, p.index + 1])
+	else:
+		p.falls += 1
+		add_feed("P%d fell" % (p.index + 1))
 	var c := p.centre()
 	c.x = clampf(c.x, 0.5, Cfg.COLS - 0.5)
 	c.y = minf(c.y, Cfg.ROWS - 0.5)
@@ -130,6 +149,55 @@ func player_in_tile(tx: int, ty: int) -> bool:
 		if p.alive and p.overlaps_tile(tx, ty):
 			return true
 	return false
+
+
+# --- fighting ------------------------------------------------------------------------
+
+## Alive players (not p) inside the swing box in front of p's aim.
+func swing_targets(p: Player) -> Array:
+	var c := p.centre() + Vector2(p.aim).normalized() * Cfg.SWING_REACH
+	var box := Rect2(c - Cfg.SWING_BOX / 2.0, Cfg.SWING_BOX)
+	var out := []
+	for o: Player in players:
+		if o.alive and o != p and box.intersects(Rect2(Vector2(o.x, o.y), Vector2(Cfg.PLAYER_W, Cfg.PLAYER_H))):
+			out.append(o)
+	return out
+
+
+## Launch direction for a swing aimed at `aim`: down spikes, sideways hits lift a bit.
+static func knock_dir(aim: Vector2) -> Vector2:
+	if aim.y > 0:
+		return aim.normalized()
+	if aim.x == 0:
+		return Vector2(0, -1)
+	return Vector2(aim.x, minf(aim.y, 0.0) - 0.4).normalized()
+
+
+func melee(p: Player, victims: Array) -> void:
+	var dir := knock_dir(Vector2(p.aim))
+	for v: Player in victims:
+		hit_player(v, p, dir, Cfg.SWING_DAMAGE, Cfg.SWING_KNOCK)
+	p.swing_t = 0.12
+	sound("hit")
+
+
+## Add damage %, then launch the target; knockback grows with its damage. attacker may be null.
+func hit_player(target: Player, attacker: Player, dir: Vector2, dmg: float, base_knock: float) -> void:
+	target.damage = minf(Cfg.MAX_DAMAGE, target.damage + dmg)
+	var knock := base_knock * (1.0 + target.damage / Cfg.KNOCK_GROWTH)
+	target.kvx = dir.x * knock
+	target.vy = dir.y * knock
+	target.grapple = null
+	target.on_ground = false
+	target.stun = Cfg.STUN_BASE + knock * Cfg.STUN_PER_KNOCK
+	target.hurt_t = 0.15
+	if attacker != null and attacker != target:
+		target.last_hit_by = attacker.index
+		target.last_hit_at = round_time
+		attacker.dealt += dmg
+	var col: Color = attacker.color if attacker != null else Color.WHITE
+	burst(target.centre(), col, clampi(int(knock), 6, 30), 6.0 + knock * 0.3, 0.4, 4)
+	shake = maxf(shake, clampf(knock / 100.0, 0.06, 0.3))
 
 
 # --- crafting menu geometry (pixels; shared by drawing and mouse hover) ---------------
@@ -228,12 +296,9 @@ func _update_projectiles(dt: float) -> void:
 				hit = p
 				break
 		if hit:
-			hit.grapple = null
-			hit.kvx = pr["dir"] * Cfg.PUSH_KNOCK
-			hit.vy = -Cfg.PUSH_LIFT
-			burst(Vector2(pr["x"], pr["y"]), owner.color, 14, 9.0, 0.4, 4)
+			var pdir: float = pr["dir"]
+			hit_player(hit, owner, Vector2(pdir, -0.45).normalized(), Cfg.PUSH_DAMAGE, Cfg.PUSH_KNOCK)
 			sound("hit")
-			shake = maxf(shake, 0.12)
 			continue
 		keep.append(pr)
 	projectiles = keep
@@ -274,11 +339,10 @@ func _explode(b: Dictionary) -> void:
 			continue
 		var d := p.centre().distance_to(at)
 		if d < Cfg.BOMB_BLAST:
-			var force := Cfg.BOMB_KNOCK * (1.0 - d / Cfg.BOMB_BLAST)
+			var f := 1.0 - d / Cfg.BOMB_BLAST
 			var dir := (p.centre() - at) / d if d > 0.01 else Vector2(0, -1)
-			p.grapple = null
-			p.kvx = dir.x * force
-			p.vy = minf(p.vy, dir.y * force - 5.0)
+			var owner: Player = players[b["owner"]]
+			hit_player(p, owner, dir, Cfg.BOMB_DAMAGE * f, Cfg.BOMB_KNOCK * f)
 	burst(at, Color(1.0, 0.78, 0.31), 30, 14.0, 0.6, 5)
 	burst(at, Color.WHITE, 12, 8.0, 0.3, 3)
 	sound("boom")
@@ -292,16 +356,20 @@ func snapshot() -> Dictionary:
 	for p: Player in players:
 		ps.append([p.x, p.y, p.facing, p.aim, p.alive, p.crafting, p.recipe, p.inv.duplicate(),
 			p.slots.map(func(s): return null if s == null else [s["item"], s["charges"]]),
-			p.item_cd, p.wins, p.grapple])
+			p.item_cd, p.wins, p.grapple,
+			p.damage, p.swing_t, p.hurt_t, p.kos, p.falls, p.dealt, p.stun])
 	return {"tick": tick, "st": state, "tm": timer, "rd": round_no, "msg": message, "sh": shake,
 		"p": ps, "ch": world.changes.duplicate(), "pr": projectiles.map(func(x): return [x["x"], x["y"], x["owner"]]),
 		"bo": bombs.map(func(x): return [x["x"], x["y"], x["fuse"], x["owner"]]),
 		"be": beams.map(func(x): return [x["from"], x["to"], x["owner"], x["time"]]),
-		"ev": events.duplicate()}
+		"ev": events.duplicate(),
+		"zl": world.zone_left, "zr": world.zone_right, "al": world.arena_left, "ar": world.arena_right,
+		"fd": feed.duplicate(true), "rt": round_time}
 
 
 func grid_message() -> Dictionary:
-	return {"g": world.grid, "v": world.version, "cr": world.cracked.keys(), "wa": world.warnings.duplicate()}
+	return {"g": world.grid, "v": world.version, "cr": world.cracked.keys(), "wa": world.warnings.duplicate(),
+		"al": world.arena_left, "ar": world.arena_right}
 
 
 func apply_grid(d: Dictionary) -> void:
@@ -310,6 +378,8 @@ func apply_grid(d: Dictionary) -> void:
 	for k in d["cr"]:
 		world.cracked[k] = true
 	world.warnings = d["wa"]
+	world.arena_left = d["al"]
+	world.arena_right = d["ar"]
 	world.broken.clear()
 	world.dirty.clear()
 	world.version += 1
@@ -328,11 +398,19 @@ func apply_snapshot(d: Dictionary) -> Array:
 	round_no = d["rd"]
 	message = d["msg"]
 	shake = maxf(shake, d["sh"])
+	round_time = d["rt"]
+	feed = d["fd"]
+	world.zone_left = d["zl"]
+	world.zone_right = d["zr"]
+	world.arena_left = d["al"]
+	world.arena_right = d["ar"]
 	for i in ps.size():
 		var p: Player = players[i]
 		var s: Array = ps[i]
 		p.x = s[0]; p.y = s[1]; p.facing = s[2]; p.aim = s[3]; p.alive = s[4]; p.crafting = s[5]
 		p.recipe = s[6]; p.inv = s[7]; p.item_cd = s[9]; p.wins = s[10]; p.grapple = s[11]
+		p.damage = s[12]; p.swing_t = s[13]; p.hurt_t = s[14]; p.kos = s[15]; p.falls = s[16]
+		p.dealt = s[17]; p.stun = s[18]
 		p.slots = s[8].map(func(sl): return null if sl == null else {"item": sl[0], "charges": sl[1]})
 	for c in d["ch"]:
 		match c[0]:
