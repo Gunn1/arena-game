@@ -41,6 +41,7 @@ var mine_progress := 0.0          # 0..1 of breaking mine_target
 var place_cd := 0.0
 var item_cd := 0.0
 var held := {}                    # last frame's input, for "just pressed"
+var smooth := Vector2.ZERO        # online client, own player: drawn offset after a correction (eases to 0)
 var alive := true
 # Fighting
 var damage := 0.0                 # Smash-style %: more damage = hits launch you farther
@@ -230,6 +231,39 @@ func _mouse_target(world: World, placing: bool) -> Vector2i:
 # --- per frame -----------------------------------------------------------------------
 
 func update(dt: float, inp: Dictionary, game) -> void:
+	_step_body(dt, inp, game)
+	_use_hands(dt, inp, game)
+	held = inp.duplicate()
+
+	# Falling out the bottom or off either side is death.
+	if y > Cfg.ROWS + 1 or x + W < -0.5 or x > Cfg.COLS + 0.5:
+		alive = false
+
+
+## Online client: just the movement half of update(), to predict your own player between snapshots.
+## No mining, placing, items or swings (the host decides those) and no death check.
+func predict_step(dt: float, inp: Dictionary, game) -> void:
+	_step_body(dt, inp, game)
+	held = inp.duplicate()
+
+
+## Everything movement needs to replay inputs exactly from this point.
+func net_state() -> Array:
+	return [x, y, vy, kvx, walk_v, on_ground, coyote, wall_coyote, wall_dir, last_wall, wall_lock,
+		jump_buffer, jump_cut_ready, stun, grapple, facing, aim, land_t, bool(held.get("jump", false))]
+
+
+func set_net_state(a: Array) -> void:
+	x = float(a[0]); y = float(a[1]); vy = float(a[2]); kvx = float(a[3]); walk_v = float(a[4])
+	on_ground = bool(a[5]); coyote = float(a[6]); wall_coyote = float(a[7]); wall_dir = int(a[8])
+	last_wall = int(a[9]); wall_lock = float(a[10]); jump_buffer = float(a[11]); jump_cut_ready = bool(a[12])
+	stun = float(a[13]); grapple = a[14]; facing = int(a[15]); aim = a[16]; land_t = float(a[17])
+	held = {"jump": bool(a[18])}
+	vel_x = walk_v + kvx
+
+
+## Timers, aim and facing, then the body moves.
+func _step_body(dt: float, inp: Dictionary, game) -> void:
 	place_cd = maxf(0.0, place_cd - dt)
 	item_cd = maxf(0.0, item_cd - dt)
 	swing_cd = maxf(0.0, swing_cd - dt)
@@ -258,12 +292,6 @@ func update(dt: float, inp: Dictionary, game) -> void:
 
 	_move_body(dt, dx, inp, game)
 	vel_x = walk_v + kvx
-	_use_hands(dt, inp, game)
-	held = inp.duplicate()
-
-	# Falling out the bottom or off either side is death.
-	if y > Cfg.ROWS + 1 or x + W < -0.5 or x > Cfg.COLS + 0.5:
-		alive = false
 
 
 func _move_body(dt: float, dx: int, inp: Dictionary, game) -> void:

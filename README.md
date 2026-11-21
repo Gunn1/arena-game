@@ -27,6 +27,10 @@ Browsers can join, but a page served over https (like GitHub Pages) can only con
 
 There's no lag compensation yet: joiners feel their ping on their own movement.
 
+## Hosting a public server
+
+To run an always-on server that browser players can join at `wss://arena.<your-domain>`, see [`deploy/README.md`](deploy/README.md): the headless server build (`arena-server-linux.zip` on each release) runs as a hardened systemd service in a Proxmox LXC, with a Cloudflare Tunnel in front for TLS (no port forwarding, home IP stays hidden).
+
 ## Controls
 
 | | Move | Jump | Aim | Mine | Place | Items (slot 1/2/3) | Craft |

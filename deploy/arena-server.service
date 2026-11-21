@@ -1,0 +1,52 @@
+# Arena dedicated server (headless Godot export).
+# Installed by deploy/install.sh to /etc/systemd/system/arena-server.service.
+#
+# The game listens on 0.0.0.0:7777 (plain ws://). There is no flag to bind it to
+# 127.0.0.1 only, so: cloudflared runs in the same container and connects to
+# localhost:7777, and nothing else should reach 7777. Do NOT port-forward 7777 on
+# the router, and block it on the LXC firewall (see deploy/README.md).
+
+[Unit]
+Description=Arena dedicated game server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=arena
+Group=arena
+ExecStart=/opt/arena/arena-server.x86_64 --headless -- --server --port 7777
+Restart=on-failure
+RestartSec=5
+
+# Godot writes logs and user:// data under $HOME/.local/share/godot.
+# /var/lib/arena is the only writable place (StateDirectory creates it).
+StateDirectory=arena
+WorkingDirectory=/var/lib/arena
+Environment=HOME=/var/lib/arena
+Environment=XDG_DATA_HOME=/var/lib/arena/.local/share
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+SystemCallArchitectures=native
+UMask=0077
+
+# Resources
+MemoryMax=512M
+# Godot starts ~1 worker thread per CPU core (36 threads on a 32-thread host).
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

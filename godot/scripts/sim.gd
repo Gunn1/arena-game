@@ -20,6 +20,7 @@ var round_time := 0.0             # seconds since this round's "go" (for KO cred
 var feed: Array = []              # [text, ttl] kill feed lines
 var hitstop := 0.0                # > 0: the whole game is frozen for a moment after a hit
 var rng := RandomNumberGenerator.new()
+var acks: Array = []              # host: per player, seq of the last input applied (sent in snapshots)
 
 
 func _init() -> void:
@@ -329,7 +330,14 @@ func _explode(b: Dictionary) -> void:
 
 # --- online: what the host sends, and how a client applies it -------------------------
 
-func snapshot() -> Dictionary:
+## ack_list (or `acks` if empty): per player, the last input seq applied, for client reconciliation.
+func snapshot(ack_list: Array = []) -> Dictionary:
+	var ak: Array = ack_list if ack_list else acks
+	var ns := []
+	var ack := []
+	for i in players.size():
+		ns.append(players[i].net_state())
+		ack.append(int(ak[i]) if i < ak.size() else 0)
 	var ps := []
 	for p: Player in players:
 		ps.append([p.x, p.y, p.facing, p.aim, p.alive, p.craft_t, p.last_crafted, p.inv.duplicate(),
@@ -343,7 +351,7 @@ func snapshot() -> Dictionary:
 		"be": beams.map(func(x): return [x["from"], x["to"], x["owner"], x["time"]]),
 		"ev": events.duplicate(),
 		"zl": world.zone_left, "zr": world.zone_right, "al": world.arena_left, "ar": world.arena_right,
-		"fd": feed.duplicate(true), "rt": round_time}
+		"fd": feed.duplicate(true), "rt": round_time, "ns": ns, "ack": ack}
 
 
 func grid_message() -> Dictionary:
@@ -362,7 +370,8 @@ func apply_grid(d: Dictionary) -> void:
 
 
 ## Client: copy the host's state. Returns the host's queued sounds and bursts to replay.
-func apply_snapshot(d: Dictionary) -> Array:
+## Player skip_index (your predicted player) keeps its own x, y, vy, vel_x, on_ground, land_t, facing, aim.
+func apply_snapshot(d: Dictionary, skip_index := -1) -> Array:
 	var ps: Array = d["p"]
 	if players.size() != ps.size():
 		players = []
@@ -384,12 +393,14 @@ func apply_snapshot(d: Dictionary) -> Array:
 	for i in ps.size():
 		var p: Player = players[i]
 		var s: Array = ps[i]
-		p.x = s[0]; p.y = s[1]; p.facing = s[2]; p.aim = s[3]; p.alive = s[4]; p.craft_t = s[5]
+		if i != skip_index:
+			p.x = s[0]; p.y = s[1]; p.facing = s[2]; p.aim = s[3]
+			p.vel_x = s[19]; p.vy = s[20]; p.on_ground = s[21]; p.land_t = s[25]
+		p.alive = s[4]; p.craft_t = s[5]
 		p.last_crafted = s[6]; p.inv = s[7]; p.item_cd = s[9]; p.wins = s[10]; p.grapple = s[11]
 		p.damage = s[12]; p.swing_t = s[13]; p.hurt_t = s[14]; p.kos = s[15]; p.falls = s[16]
 		p.dealt = s[17]; p.stun = s[18]
-		p.vel_x = s[19]; p.vy = s[20]; p.on_ground = s[21]; p.mine_target = s[22]; p.mine_progress = s[23]
-		p.mouse = s[24]; p.land_t = s[25]
+		p.mine_target = s[22]; p.mine_progress = s[23]; p.mouse = s[24]
 		p.slots = s[8].map(func(sl): return null if sl == null else {"item": sl[0], "charges": sl[1]})
 	for c in d["ch"]:
 		match c[0]:

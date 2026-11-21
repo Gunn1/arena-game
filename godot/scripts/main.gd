@@ -66,17 +66,23 @@ var match_size := 2
 var peer: WebSocketMultiplayerPeer
 var lobby_peers: Array = []       # host/server: peer ids, in join order
 var peer_index := {}              # peer id -> player index in the current match
-var remote := {}                  # peer id -> {"state": {}, "pending": [], "wheel": 0}
+var remote := {}                  # peer id -> {"queue": Prediction.ServerQueue, "wheel": 0}
 var my_index := 0                 # client: which player I am
 var lobby_size := 0
 var dedicated := false            # client: the host is a dedicated server
 var sent_version := -1
+var predictor := Prediction.Client.new()   # client: predicts my own player between snapshots
+var trails := {}                  # client: other players' index -> [[receive time, Vector2 pos], ...]
+const INTERP_DELAY := 0.1         # client: other players are drawn this far in the past, between snapshots
 
 # Test hooks (command line)
 var bot := false
 var quit_after := 0.0
 var print_hash := false
 var autostart := 0
+var lag := 0.0                    # client: --lag MS, extra delay each way (seconds)
+var lag_out: Array = []           # [due msec, input] waiting to be sent
+var lag_in: Array = []            # [due msec, "snap"/"grid", Dictionary] waiting to be applied
 
 
 func _ready() -> void:
@@ -120,6 +126,7 @@ func _ready() -> void:
 	var port := int(_arg(args, "--port", str(Cfg.NET_PORT)))
 	quit_after = float(_arg(args, "--quit-after", "0"))
 	autostart = int(_arg(args, "--autostart", "0"))
+	lag = float(_arg(args, "--lag", "0")) / 1000.0
 	if "--server" in args:
 		host_game(true, port)
 		print("Dedicated server listening on port %d" % port)
@@ -385,20 +392,13 @@ func _local_input(i: int) -> Dictionary:
 	return _read_pad(src) if src is int else (_my_input() if src == "p1_mouse" else _read_keys(src))
 
 
+## One queued input per tick (the queue merges bursts and repeats the last input when empty).
 func _remote_input(peer_id: int) -> Dictionary:
 	var r: Dictionary = remote.get(peer_id, {})
 	if r.is_empty():
 		return {}
-	var out: Dictionary = r["state"].duplicate()
-	if r["pending"]:
-		r["state"] = r["pending"][-1]
-		out = r["state"].duplicate()
-		# Several input frames can arrive between two of ours: keep any button pressed in one of them.
-		for s in r["pending"]:
-			for k in s:
-				if s[k] is bool and s[k]:
-					out[k] = true
-		r["pending"] = []
+	var q: Prediction.ServerQueue = r["queue"]
+	var out := q.next()
 	out["wheel"] = r["wheel"]
 	r["wheel"] = 0
 	return out
@@ -515,19 +515,28 @@ func join_game(address: String) -> void:
 	multiplayer.multiplayer_peer = peer
 	mode = "client"
 	screen = "lobby"
+	predictor = Prediction.Client.new()
+	trails = {}
 	notice = "Connecting to %s ..." % url
 	lobby_size = 0
 	address_edit.visible = false
 	address_edit.release_focus()
 
 
+## What the player typed -> a WebSocket URL.
+##   "wss://..." / "ws://..."      used as is
+##   "100.101.102.103" (an IP)     ws://IP:7777 (a friend hosting over Tailscale / LAN)
+##   "arena.tylergunn.me" (a name) wss://name (a public server behind TLS, e.g. a Cloudflare Tunnel)
+##   anything with ":port"         ws://host:port (wss from an https page, which can't use ws)
 func _url_for(address: String) -> String:
 	if "://" in address:
 		return address
-	if not ":" in address:
-		address += ":%d" % Cfg.NET_PORT
-	var secure := OS.has_feature("web") and str(JavaScriptBridge.eval("location.protocol")) == "https:"
-	return ("wss://" if secure else "ws://") + address
+	var secure_page := OS.has_feature("web") and str(JavaScriptBridge.eval("location.protocol")) == "https:"
+	if ":" in address:
+		return ("wss://" if secure_page else "ws://") + address
+	if address.is_valid_ip_address() or address == "localhost":
+		return ("wss://" if secure_page else "ws://") + address + ":%d" % Cfg.NET_PORT
+	return "wss://" + address
 
 
 func leave_online(msg: String) -> void:
@@ -538,6 +547,10 @@ func leave_online(msg: String) -> void:
 	mode = "local"
 	lobby_peers = []
 	remote = {}
+	predictor = Prediction.Client.new()
+	trails = {}
+	lag_out.clear()
+	lag_in.clear()
 	sim = GameSim.new()
 	shown_version = -1
 	particles.clear()
@@ -562,7 +575,7 @@ func _on_peer_connected(id: int) -> void:
 		peer.disconnect_peer(id)
 		return
 	lobby_peers.append(id)
-	remote[id] = {"state": {}, "pending": [], "wheel": 0}
+	remote[id] = {"queue": Prediction.ServerQueue.new(), "wheel": 0}
 	_send_lobby()
 	if autostart and lobby_peers.size() >= autostart:
 		start_online_match()
@@ -619,7 +632,7 @@ func rpc_request_start() -> void:
 func rpc_input(state: Dictionary) -> void:
 	var id := multiplayer.get_remote_sender_id()
 	if remote.has(id):
-		remote[id]["pending"].append(state)
+		remote[id]["queue"].push(state)
 		remote[id]["wheel"] += int(state.get("wheel", 0))
 
 
@@ -633,16 +646,123 @@ func rpc_lobby(you: int, count: int, is_dedicated: bool) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func rpc_grid(d: Dictionary) -> void:
-	sim.apply_grid(d)
-	particles.clear()
+	if lag > 0:
+		lag_in.append([Time.get_ticks_msec() + int(lag * 1000), "grid", d])
+	else:
+		_on_grid(d)
 
 
 @rpc("authority", "call_remote", "reliable")
 func rpc_snap(d: Dictionary) -> void:
+	if lag > 0:
+		lag_in.append([Time.get_ticks_msec() + int(lag * 1000), "snap", d])
+	else:
+		_on_snap(d)
+
+
+func _on_grid(d: Dictionary) -> void:
+	sim.apply_grid(d)
+	particles.clear()
+
+
+## Client: take the host's state, except my own player, which restarts from the host's state for
+## the last input it applied and replays the ones it hasn't seen yet.
+func _on_snap(d: Dictionary) -> void:
 	screen = "game"
-	_play_events(sim.apply_snapshot(d))
+	var count := sim.players.size()
+	var had := my_index < count
+	var was_alive: bool = had and sim.players[my_index].alive
+	var predicted_x: float = sim.players[my_index].x if had else 0.0
+	var mouse = sim.players[my_index].mouse if had else null
+	var round_before := sim.round_no
+	_play_events(sim.apply_snapshot(d, my_index))
+	_record_trails()
+	var me := _my_player()
+	if me and my_index < d["ns"].size():
+		var ns: Array = d["ns"][my_index]
+		if had and count == sim.players.size() and was_alive and me.alive and sim.round_no == round_before \
+				and sim.state in ["play", "outro"]:
+			predictor.reconcile(me, ns, int(d["ack"][my_index]), sim.world)
+			me.mouse = mouse                         # my latest aim, not the host's older copy
+		else:
+			# Died, respawned or between rounds: nothing to predict, just take the host's state.
+			me.set_net_state(ns)
+			me.smooth = Vector2.ZERO
+			predictor.history.clear()
+		if print_hash and sim.tick % 60 == 30:
+			print("PRED %d %.4f %.4f" % [sim.tick, predicted_x, float(ns[0])])
 	if print_hash and sim.tick % 60 == 0:
 		print("HASH %d %s" % [sim.tick, sim.world.grid.hex_encode().md5_text()])
+
+
+## Client: remember where the other players were at each snapshot, to draw them between snapshots.
+func _record_trails() -> void:
+	var now := _now()
+	for p: Player in sim.players:
+		if p.index == my_index:
+			continue
+		var pos := Vector2(p.x, p.y)
+		var tr: Array = trails.get(p.index, [])
+		if tr and (tr[-1][1] as Vector2).distance_to(pos) > 3.0:
+			tr.clear()                               # respawned: don't slide across the map
+		tr.append([now, pos])
+		while tr.size() > 2 and tr[1][0] < now - 0.5:
+			tr.pop_front()
+		trails[p.index] = tr
+
+
+func _now() -> float:
+	return Time.get_ticks_usec() / 1000000.0
+
+
+## Where to draw a player (top-left, in tiles). Client: my own player is predicted, plus the easing
+## left from the last correction; others are interpolated INTERP_DELAY behind. Otherwise: as simulated.
+func draw_pos(p: Player) -> Vector2:
+	if mode != "client":
+		return Vector2(p.x, p.y)
+	if p.index == my_index:
+		return Vector2(p.x, p.y) + p.smooth
+	var tr: Array = trails.get(p.index, [])
+	if tr.is_empty():
+		return Vector2(p.x, p.y)
+	var t := _now() - INTERP_DELAY
+	if t <= tr[0][0]:
+		return tr[0][1]
+	for i in range(1, tr.size()):
+		var b: Array = tr[i]
+		if t <= b[0]:
+			var a: Array = tr[i - 1]
+			var span: float = b[0] - a[0]
+			var k: float = 0.0 if span <= 0.0 else (t - a[0]) / span
+			return (a[1] as Vector2).lerp(b[1], k)
+	return tr[-1][1]
+
+
+func _draw_centre(p: Player) -> Vector2:
+	return draw_pos(p) + Vector2(Cfg.PLAYER_W, Cfg.PLAYER_H) / 2.0
+
+
+## Client: inputs and snapshots held back by --lag until they're due.
+func _flush_lag() -> void:
+	var now := Time.get_ticks_msec()
+	var connected := peer != null and peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED
+	while lag_out and lag_out[0][0] <= now:
+		var sent: Dictionary = lag_out.pop_front()[1]
+		if connected:
+			rpc_input.rpc_id(1, sent)
+	while lag_in and lag_in[0][0] <= now and mode == "client":
+		var m: Array = lag_in.pop_front()
+		if m[1] == "grid":
+			_on_grid(m[2])
+		else:
+			_on_snap(m[2])
+
+
+func _send_input(sent: Dictionary) -> void:
+	if lag > 0:
+		lag_out.append([Time.get_ticks_msec() + int(lag * 1000), sent])
+	else:
+		rpc_input.rpc_id(1, sent)
 
 
 # --- frame loop -----------------------------------------------------------------------
@@ -651,9 +771,16 @@ func _physics_process(_delta: float) -> void:
 	if quit_after > 0 and time > quit_after:
 		get_tree().quit()
 	if mode == "client":
+		_flush_lag()
 		if screen == "game" and sim.state in ["intro", "play", "outro"] and peer \
 				and peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
-			rpc_input.rpc_id(1, _my_input())
+			var input := _my_input()
+			_send_input(predictor.record(input))
+			var me := _my_player()
+			# Move my own player now instead of waiting a round trip (the host freezes everyone
+			# between rounds and during hitstop, so don't predict then either).
+			if me and me.alive and sim.state in ["play", "outro"] and sim.hitstop <= 0:
+				predictor.predict(me, sim.world, input)
 		for pos in sim.world.warnings:           # tick warnings for the shake effect only
 			sim.world.warnings[pos] = maxf(0.01, sim.world.warnings[pos] - Cfg.DT)
 		return
@@ -671,6 +798,10 @@ func _physics_process(_delta: float) -> void:
 		if sim.world.version != sent_version:
 			sent_version = sim.world.version
 			rpc_grid.rpc(sim.grid_message())
+		sim.acks = []
+		for i in sim.players.size():
+			var id = peer_index.find_key(i)
+			sim.acks.append(remote[id]["queue"].acked if id != null and remote.has(id) else 0)
 		rpc_snap.rpc(sim.snapshot())
 		if print_hash and sim.tick % 60 == 0:
 			print("HASH %d %s" % [sim.tick, sim.world.grid.hex_encode().md5_text()])
@@ -684,6 +815,9 @@ func _process(delta: float) -> void:
 		_refresh_tiles()
 		_drain_debris()
 		_update_juice(delta)
+		var me := _my_player()
+		if mode == "client" and me:
+			me.smooth *= exp(-delta * 15.0)          # ease out the last prediction correction
 		for p in particles:
 			p[0] += p[1] * delta
 			p[1].y += p[5] * delta
@@ -744,7 +878,8 @@ func _update_juice(delta: float) -> void:
 		if not p.alive:
 			prev_land[p.index] = 0.0
 			continue
-		var feet := Vector2(p.x + Cfg.PLAYER_W / 2.0, p.y + Cfg.PLAYER_H)
+		var at := draw_pos(p)
+		var feet := Vector2(at.x + Cfg.PLAYER_W / 2.0, at.y + Cfg.PLAYER_H)
 		# A foot comes down every half turn of the run cycle.
 		var phase: float = run_phase.get(p.index, 0.0)
 		if not frozen and p.on_ground and absf(p.vel_x) > 0.5:
@@ -762,7 +897,7 @@ func _update_juice(delta: float) -> void:
 					Color(0.86, 0.82, 0.74, 0.8), [2, 3, 3, 4].pick_random(), 4.0])
 		prev_land[p.index] = p.land_t
 		if not frozen and p.stun > 0 and Vector2(p.vel_x, p.vy).length() > 10.0:
-			particles.append([p.centre() + Vector2(randf_range(-0.25, 0.25), randf_range(-0.4, 0.4)), Vector2.ZERO,
+			particles.append([_draw_centre(p) + Vector2(randf_range(-0.25, 0.25), randf_range(-0.4, 0.4)), Vector2.ZERO,
 				randf_range(0.2, 0.35), Color(p.color, 0.7), [3, 4, 5].pick_random(), 0.0])
 
 
@@ -833,7 +968,7 @@ func _draw_overlay() -> void:
 			_draw_mining(p)
 	for p: Player in sim.players:
 		if p.alive and p.grapple != null:
-			overlay.draw_line(p.centre() * CELL, Vector2(p.grapple.x, p.grapple.y) * CELL, Color(0.86, 0.86, 0.9), 2.0)
+			overlay.draw_line(_draw_centre(p) * CELL, Vector2(p.grapple.x, p.grapple.y) * CELL, Color(0.86, 0.86, 0.9), 2.0)
 	for p: Player in sim.players:
 		if p.alive:
 			_draw_player(p)
@@ -897,14 +1032,15 @@ func damage_color(d: float) -> Color:
 
 
 func _draw_player(p: Player) -> void:
-	var t := p.target(sim.world, false)
+	var at := draw_pos(p)
+	var t := _target_at(p, at)
 	if sim.world.solid(t.x, t.y) or p.blocks() > 0:
 		overlay.draw_rect(Rect2(t.x * CELL, t.y * CELL, CELL, CELL), p.color, false, 2.0)
-	var pos := Vector2(p.x, p.y) * CELL
+	var pos := at * CELL
 	var w := Cfg.PLAYER_W * CELL
-	_draw_character(p)
+	_draw_character(p, at)
 	if p.swing_t > 0:
-		var c := p.centre() * CELL
+		var c := _draw_centre(p) * CELL
 		var a := Vector2(p.aim).angle()
 		var alpha := clampf(p.swing_t / 0.12, 0.0, 1.0)
 		var r := 1.3 * CELL
@@ -925,9 +1061,20 @@ func _draw_player(p: Player) -> void:
 		text(overlay, "+" + made, Vector2(pos.x + w / 2.0, pos.y - 22 - rise), 16, Color(p.color, alpha), true)
 
 
+## The block p targets as if standing at `at` (where it's drawn).
+func _target_at(p: Player, at: Vector2) -> Vector2i:
+	var real := Vector2(p.x, p.y)
+	p.x = at.x
+	p.y = at.y
+	var t := p.target(sim.world, false)
+	p.x = real.x
+	p.y = real.y
+	return t
+
+
 ## The little guy, drawn around his feet so squash and stretch keep him on the ground.
-## Local coords: x right, y up is negative, (0, 0) between the feet.
-func _draw_character(p: Player) -> void:
+## Local coords: x right, y up is negative, (0, 0) between the feet. at: top-left, in tiles.
+func _draw_character(p: Player, at: Vector2) -> void:
 	var w := Cfg.PLAYER_W * CELL
 	var h := Cfg.PLAYER_H * CELL
 	var running: bool = p.on_ground and absf(p.vel_x) > 0.5
@@ -948,7 +1095,7 @@ func _draw_character(p: Player) -> void:
 		angle = clampf(p.vel_x * 0.012, -0.1, 0.1)
 	var grow := 1.18 if sim.hitstop > 0 and p.hurt_t > 0 else 1.0
 	# Rotate about the middle of the body, scale from the feet.
-	var centre := Vector2(p.x * CELL + w / 2.0, p.y * CELL + h / 2.0)
+	var centre := Vector2(at.x * CELL + w / 2.0, at.y * CELL + h / 2.0)
 	overlay.draw_set_transform(centre + Vector2(0, h / 2.0).rotated(angle), angle, Vector2(sx, sy) * grow)
 
 	var body := Color.WHITE if p.hurt_t > 0 else p.color
@@ -1215,7 +1362,7 @@ func _draw_title() -> void:
 func _draw_join() -> void:
 	var cx := WIDTH / 2.0
 	text(hud, "Join a game", Vector2(cx, 200), 56, INK, true)
-	text(hud, "Type the host's address (their Tailscale IP, or a server address), then press Enter.", Vector2(cx, 250), 20, DIM, true)
+	text(hud, "Type a friend's IP (Tailscale works best) or a server name like arena.tylergunn.me, then Enter.", Vector2(cx, 250), 20, DIM, true)
 	text(hud, "Example: 100.101.102.103  (port %d is added for you)     Esc = back" % Cfg.NET_PORT, Vector2(cx, 400), 16, DIM, true)
 	if notice:
 		text(hud, notice, Vector2(cx, 460), 20, DANGER, true)
