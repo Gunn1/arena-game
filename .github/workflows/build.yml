@@ -1,0 +1,96 @@
+# Runs the rules tests, exports the game, and publishes the web version on GitHub Pages.
+# - Every push to main: test, build web + Linux + Windows, publish the web version.
+# - Pull requests: test and build only, nothing is published.
+# Desktop builds are attached to each run as the "desktop-builds" artifact.
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GODOT_VERSION: "4.7.2"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Godot
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ~/godot
+          key: godot-${{ env.GODOT_VERSION }}-v1
+
+      - name: Download Godot and export templates (checksums verified)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/godot && cd ~/godot
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          curl -fsSLO "$base/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          curl -fsSLO "$base/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          curl -fsSLO "$base/SHA512-SUMS.txt"
+          grep -E " Godot_v${GODOT_VERSION}-stable_(linux\.x86_64\.zip|export_templates\.tpz)$" SHA512-SUMS.txt | sha512sum -c -
+          unzip -q "Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          mv "Godot_v${GODOT_VERSION}-stable_linux.x86_64" godot
+          unzip -q "Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          # keep only the templates we export with, so the cache stays small
+          find templates -type f ! -name version.txt ! -name web_nothreads_release.zip \
+            ! -name linux_release.x86_64 ! -name windows_release_x86_64.exe -delete
+          rm -f *.zip *.tpz SHA512-SUMS.txt
+
+      - name: Install export templates
+        run: |
+          dest=~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+          mkdir -p "$dest" && cp ~/godot/templates/* "$dest/"
+
+      - name: Rules tests
+        run: |
+          ~/godot/godot --headless --path godot --import
+          ~/godot/godot --headless --path godot -s tests/test_sim.gd
+
+      - name: Online test (dedicated server + 2 bot clients)
+        run: godot/tests/net_test.sh ~/godot/godot
+
+      - name: Export web, Linux and Windows
+        run: |
+          mkdir -p build/web build/linux build/windows
+          ~/godot/godot --headless --path godot --export-release "Web" ../build/web/index.html
+          ~/godot/godot --headless --path godot --export-release "Linux" ../build/linux/arena.x86_64
+          ~/godot/godot --headless --path godot --export-release "Windows" ../build/windows/arena.exe
+          test -f build/web/index.wasm && test -f build/linux/arena.x86_64 && test -f build/windows/arena.exe
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/web
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-builds
+          path: |
+            build/linux/arena.x86_64
+            build/windows/arena.exe
+
+  publish:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
