@@ -80,6 +80,7 @@ var bot := false
 var quit_after := 0.0
 var print_hash := false
 var autostart := 0
+var start_at := 0                 # --bot client: ask the dedicated server to start at this many players
 var lag := 0.0                    # client: --lag MS, extra delay each way (seconds)
 var lag_out: Array = []           # [due msec, input] waiting to be sent
 var lag_in: Array = []            # [due msec, "snap"/"grid", Dictionary] waiting to be applied
@@ -126,6 +127,7 @@ func _ready() -> void:
 	var port := int(_arg(args, "--port", str(Cfg.NET_PORT)))
 	quit_after = float(_arg(args, "--quit-after", "0"))
 	autostart = int(_arg(args, "--autostart", "0"))
+	start_at = int(_arg(args, "--start-at", "0"))
 	lag = float(_arg(args, "--lag", "0")) / 1000.0
 	if "--server" in args:
 		host_game(true, port)
@@ -571,8 +573,13 @@ func _offset() -> int:
 func _on_peer_connected(id: int) -> void:
 	if not _hosting():
 		return
+	# A finished match with room to spare goes back to the lobby so newcomers can join.
+	if screen == "game" and sim.state == "match_over" and lobby_peers.size() + _offset() < Cfg.MAX_PLAYERS:
+		_back_to_lobby()
 	if screen != "lobby" or lobby_peers.size() + _offset() >= Cfg.MAX_PLAYERS:
-		peer.disconnect_peer(id)
+		var why := "That game is full (4 players)." if screen == "lobby" else "A match is in progress. Try again in a minute."
+		rpc_refused.rpc_id(id, why)
+		_kick_later(id)
 		return
 	lobby_peers.append(id)
 	remote[id] = {"queue": Prediction.ServerQueue.new(), "wheel": 0}
@@ -589,8 +596,33 @@ func _on_peer_disconnected(id: int) -> void:
 	if peer_index.has(id) and screen == "game":
 		sim.players[peer_index[id]].alive = false   # left mid-match: counts as out
 	peer_index.erase(id)
+	if mode == "server" and lobby_peers.is_empty() and screen != "lobby":
+		_back_to_lobby()                       # everyone left: a dedicated server starts over
 	if screen == "lobby":
 		_send_lobby()
+
+
+func _back_to_lobby() -> void:
+	screen = "lobby"
+	sim = GameSim.new()
+	peer_index = {}
+	sent_version = -1
+	shown_version = -1
+	particles.clear()
+	for id in remote:
+		remote[id] = {"queue": Prediction.ServerQueue.new(), "wheel": 0}
+
+
+## Give the refusal message a moment to arrive before closing the connection.
+func _kick_later(id: int) -> void:
+	await get_tree().create_timer(0.5).timeout
+	if peer and multiplayer.multiplayer_peer == peer:
+		peer.disconnect_peer(id)
+
+
+@rpc("authority", "call_remote", "reliable")
+func rpc_refused(why: String) -> void:
+	leave_online(why)
 
 
 func _send_lobby() -> void:
@@ -642,6 +674,9 @@ func rpc_lobby(you: int, count: int, is_dedicated: bool) -> void:
 	lobby_size = count
 	dedicated = is_dedicated
 	notice = ""
+	# Test hook: a --bot started with --start-at N asks a dedicated server to start once N are in.
+	if bot and start_at > 0 and dedicated and count >= start_at:
+		rpc_request_start.rpc_id(1)
 
 
 @rpc("authority", "call_remote", "reliable")
