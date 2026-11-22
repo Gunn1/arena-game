@@ -116,7 +116,10 @@ func is_ready(track: String) -> bool:
 func _process(delta: float) -> void:
 	# Until the menu track exists we're on the title screen with nothing to play: render faster
 	# (~8 ms/frame) so music starts within a second or two instead of ~5 s.
-	render(BUDGET_USEC if is_ready("menu") else BUDGET_USEC * 4)
+	# The web build is single-threaded: audio is mixed on the same thread, so long frames starve it
+	# (crackles). Render in smaller slices there.
+	var budget := BUDGET_USEC / 2 if OS.has_feature("web") else BUDGET_USEC
+	render(budget if is_ready("menu") else budget * 3)
 	if _want == "" or is_ready(_want):
 		_cur = _want
 	_hype = move_toward(_hype, _intensity, delta * 0.5)
