@@ -13,6 +13,10 @@ Made with [Godot 4.7](https://godotengine.org) in `godot/`. The original Python/
 
 One player hosts and runs the game; everyone else joins and sends their inputs (WebSockets, port 7777).
 
+**Quickest:** press **Enter** on the title screen to join the public server (arena.tylergunn.me). Everyone in its lobby can press Enter to start once 2+ are in.
+
+Or play with friends on your own machine:
+
 1. Host: run the desktop version, press **H**. The lobby shows your addresses.
 2. Friends: press **J**, type the host's address, press Enter. Use Tailscale if you can: no port forwarding, and the host's firewall already trusts it.
 3. Host presses **Enter** to start (2-4 players).

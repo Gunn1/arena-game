@@ -139,3 +139,8 @@ It downloads the latest release, replaces the binary, and restarts the service (
 
 - `arena-server` exits with status 226/NAMESPACE or similar: some sandboxing options in the unit may not be allowed in your container. Comment out the `Protect*`/`Private*` lines one at a time in `/etc/systemd/system/arena-server.service`, then `systemctl daemon-reload && systemctl restart arena-server`. (The unit is overwritten when you rerun `install.sh`.)
 - Browser says it can't connect: check you typed `wss://`, that `cloudflared` is running, and the curl test in step 7.
+
+
+## Automatic updates
+
+`install.sh` also installs `arena-update.timer`. Every 5 minutes it checks the latest GitHub release and, if it's newer than `/opt/arena/VERSION` **and nobody is connected**, reinstalls the server. Online play needs the same version on both ends, so this keeps the server in step with the web version and the downloads. Check it with `systemctl list-timers arena-update.timer` and `journalctl -u arena-update`.

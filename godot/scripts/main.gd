@@ -429,7 +429,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		sfx.muted = not sfx.muted
 	match screen:
 		"title":
-			if key == KEY_H and not OS.has_feature("web"):
+			if key == KEY_ENTER or key == KEY_KP_ENTER:
+				join_game(Cfg.PUBLIC_SERVER)
+			elif key == KEY_H and not OS.has_feature("web"):
 				host_game(false, Cfg.NET_PORT)
 			elif key == KEY_J:
 				screen = "join"
@@ -1369,10 +1371,11 @@ func _draw_title() -> void:
 	text(hud, "ARENA (working title)", Vector2(cx, 100), 64, INK, true)
 	text(hud, "Mine blocks and ore, craft items, and don't fall out of the map.", Vector2(cx, 145), 22, DIM, true)
 	text(hud, "Hits raise damage %: the higher it is, the farther you fly. The edges crumble inward.", Vector2(cx, 175), 22, DIM, true)
-	var options := "J = join an online game     2 / 3 / 4 = local players on this device"
+	text(hud, "Press Enter to play online", Vector2(cx, 232), 30, INK, true)
+	var options := "J = join a friend by address     2 / 3 / 4 = local players on this device"
 	if not OS.has_feature("web"):
-		options = "H = host an online game     " + options
-	text(hud, options, Vector2(cx, 235), 22, INK, true)
+		options = "H = host for friends     " + options
+	text(hud, options, Vector2(cx, 262), 17, DIM, true)
 	var lines := [
 		"Controls:  A/D move   W or Space jump   hold left-click: mine / click a player: hit   right-click place",
 		"Q/E/R items   F craft   the mouse picks the block within reach",
@@ -1381,7 +1384,7 @@ func _draw_title() -> void:
 		"Craft: one press makes the best item you can afford (shown on your HUD).   M = mute",
 	]
 	for i in lines.size():
-		text(hud, lines[i], Vector2(cx, 280 + i * 24), 15, DIM, true)
+		text(hud, lines[i], Vector2(cx, 292 + i * 24), 15, DIM, true)
 	for i in Items.RECIPES.size():
 		var key: String = Items.RECIPES[i]
 		var item: Dictionary = Items.ITEMS[key]

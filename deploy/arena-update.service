@@ -1,0 +1,8 @@
+[Unit]
+Description=Update the arena game server to the latest GitHub release (when idle)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/arena/arena-update.sh

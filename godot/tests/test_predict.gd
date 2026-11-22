@@ -28,6 +28,7 @@ func _init() -> void:
 	test_convergence()
 	test_correction()
 	test_server_queue()
+	test_shake_fades()
 	print("all good" if failures == 0 else "%d FAILURES" % failures)
 	quit(0 if failures == 0 else 1)
 
@@ -197,3 +198,23 @@ func test_server_queue() -> void:
 		item_seen = item_seen or bool(r.get("item1", false))
 	check(item_seen, "an action pressed only in a merged-away input survives the merge")
 	print("server queue: FIFO 1..3, empty repeats, burst of 7 acked %s, merged item1 kept %s OK" % [str(acks), str(item_seen)])
+
+
+## Regression: online clients kept the max shake ever received, so the screen shook forever.
+func test_shake_fades() -> void:
+	var host := GameSim.new()
+	host.start_match(2)
+	host.state = "play"
+	var client := GameSim.new()
+	host.hit_player(host.players[1], host.players[0], Vector2(1, -0.4).normalized(), 50.0, 20.0)
+	client.apply_snapshot(host.snapshot())
+	var peak := client.shake
+	var idle := [{}, {}]
+	for i in 120:
+		host.update(Cfg.DT, idle)
+		host.events.clear()
+		host.world.changes.clear()
+		client.apply_snapshot(host.snapshot())
+	check(peak > 0.0, "client got the shake")
+	check(client.shake == 0.0, "client shake fades back to 0 (was %.2f)" % client.shake)
+	print("shake: client peak %.2f, after 2 s %.2f OK" % [peak, client.shake])

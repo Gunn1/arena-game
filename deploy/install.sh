@@ -66,9 +66,22 @@ else
     install -m 0644 -o root -g root "${tmp}/arena-server.service" "${UNIT_PATH}"
 fi
 
+# Auto-update: install the updater next to the binary and enable its timer (files next to this script).
+# (Skipped when the updater itself runs the installed copy from /opt/arena.)
+[[ "${script_dir}" == "${INSTALL_DIR}" ]] || for f in arena-update.sh arena-update.service arena-update.timer; do
+    [[ -f "${script_dir}/${f}" ]] || continue
+    case "${f}" in
+        *.sh) install -m 0755 -o root -g root "${script_dir}/${f}" "${INSTALL_DIR}/${f}"
+              install -m 0755 -o root -g root "${BASH_SOURCE[0]:-$0}" "${INSTALL_DIR}/install.sh" ;;
+        *)    install -m 0644 -o root -g root "${script_dir}/${f}" "/etc/systemd/system/${f}" ;;
+    esac
+done
+if [[ "${ARENA_VERSION}" != "latest" ]]; then echo "${ARENA_VERSION}" > "${INSTALL_DIR}/VERSION"; fi
+
 systemctl daemon-reload
 systemctl enable arena-server.service
 systemctl restart arena-server.service
+if [[ -f /etc/systemd/system/arena-update.timer ]]; then systemctl enable --now arena-update.timer; fi
 
 sleep 2
 if systemctl is-active --quiet arena-server.service; then
