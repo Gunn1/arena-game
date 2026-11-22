@@ -81,7 +81,8 @@ jobs:
           ~/godot/godot --headless --path godot --export-release "Linux" ../build/linux/arena.x86_64
           ~/godot/godot --headless --path godot --export-release "Linux Server" ../build/server/arena-server.x86_64
           ~/godot/godot --headless --path godot --export-release "Windows" ../build/windows/arena.exe
-          test -f build/web/index.wasm && test -f build/linux/arena.x86_64 && test -f build/server/arena-server.x86_64 && test -f build/windows/arena.exe
+          tools/version_web.sh build/web
+          test -f "build/web/arena-$(sed -n 's/^const GAME_VERSION := \"\(.*\)\"/\1/p' godot/scripts/config.gd).wasm" && test -f build/linux/arena.x86_64 && test -f build/server/arena-server.x86_64 && test -f build/windows/arena.exe
 
       - uses: actions/upload-pages-artifact@v3
         with:
