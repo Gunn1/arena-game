@@ -56,8 +56,8 @@ const ARENA_BASE := 20
 const ARENA_PER_PLAYER := 10
 
 # The zone: the map crumbles from both edges toward the middle
-const ZONE_GRACE := 4.0           # seconds after "go" before the edges start closing
-const ZONE_CLOSE_TIME := 50.0     # seconds for the edges to meet in the middle (speeds up as it goes)
+const ZONE_GRACE := 10.0          # seconds after "go" before the edges start closing
+const ZONE_CLOSE_TIME := 90.0     # seconds for the edges to meet in the middle (speeds up as it goes)
 const CRUMBLE_WARN := 1.0         # a block shakes this long before it breaks
 
 # Fighting (Smash-style): hits add damage %, and knockback grows with damage %
@@ -107,7 +107,7 @@ const PUBLIC_SERVER := "arena.tylergunn.me"   # "Play online" on the title scree
 # Game version. Online, the host and every player must match exactly: it's sent as the
 # WebSocket subprotocol, so a different version can't even connect (no silent breakage).
 # The release workflow checks that the git tag (vX.Y.Z) matches this.
-const GAME_VERSION := "0.5.3"
+const GAME_VERSION := "0.5.4"
 const NET_PROTOCOL := "arena-" + GAME_VERSION
 
 const PLAYER_COLORS := [Color(1.0, 0.42, 0.42), Color(0.31, 0.66, 1.0), Color(1.0, 0.82, 0.25), Color(0.72, 0.48, 1.0)]

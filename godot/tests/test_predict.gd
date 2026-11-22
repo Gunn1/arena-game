@@ -209,12 +209,15 @@ func test_shake_fades() -> void:
 	host.hit_player(host.players[1], host.players[0], Vector2(1, -0.4).normalized(), 50.0, 20.0)
 	client.apply_snapshot(host.snapshot())
 	var peak := client.shake
+	# The hit player may also fall out (random map), which shakes again; it must still fade to 0.
 	var idle := [{}, {}]
-	for i in 120:
+	var frames := 0
+	while frames < 600 and (frames < 30 or client.shake > 0.0):
 		host.update(Cfg.DT, idle)
 		host.events.clear()
 		host.world.changes.clear()
 		client.apply_snapshot(host.snapshot())
+		frames += 1
 	check(peak > 0.0, "client got the shake")
-	check(client.shake == 0.0, "client shake fades back to 0 (was %.2f)" % client.shake)
-	print("shake: client peak %.2f, after 2 s %.2f OK" % [peak, client.shake])
+	check(client.shake == 0.0, "client shake fades back to 0 (was %.2f after %d frames)" % [client.shake, frames])
+	print("shake: client peak %.2f, back to 0 after %.1f s OK" % [peak, frames / 60.0])

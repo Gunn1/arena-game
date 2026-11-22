@@ -44,7 +44,7 @@ To run an always-on server that browser players can join at `wss://arena.<your-d
 | Controller | left stick / d-pad | A | right stick | hold RT | LT | X / Y / B | RB |
 
 - **Fighting:** the mine button hits a player in front of you. Each hit adds damage %; the higher it is, the farther hits launch you. Fall out within 4 s of a hit and the hitter gets the KO.
-- **The zone:** the arena crumbles from both edges toward the middle (about 50 s to close).
+- **The zone:** the arena crumbles from both edges toward the middle (starts after 10 s, about 90 s to close).
 - **Crafting:** one press crafts the most valuable item you can afford; your HUD shows what it'll make (or what you still need).
 - **Wall jump:** jump while touching a wall in the air; not off the same side twice in a row.
 - **Local games:** 2/3/4 on the title screen. P2 uses the right side of the keyboard unless a controller is plugged in; P3 and P4 need controllers.
