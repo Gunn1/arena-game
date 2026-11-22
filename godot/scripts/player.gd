@@ -30,6 +30,7 @@ var last_wall := 0                # side of the last wall jump; can't repeat it 
 var wall_lock := 0.0
 var facing := 1
 var aim := Vector2i(1, 0)
+var aim_vec := Vector2(1, 0)      # unit aim, not snapped (mouse / stick, else aim): the swing goes this way
 var inv := {}
 var slots: Array = []             # null or {"item": key, "charges": n}
 var craft_t := 0.0                # > 0 while the "+Item" popup shows
@@ -51,6 +52,7 @@ var swing_t := 0.0                # > 0 while the swing is drawn
 var hurt_t := 0.0                 # > 0 while the hit flash is drawn
 var last_hit_by := -1             # player index, for KO credit
 var last_hit_at := -100.0         # round time of that hit
+var lava_cd := 0.0                # > 0: lava already burned you just now
 # Match stats (kept across rounds)
 var kos := 0
 var falls := 0
@@ -81,6 +83,7 @@ func spawn(col: int, ground_row: int) -> void:
 	wall_lock = 0.0
 	facing = 1 if col < Cfg.COLS / 2 else -1
 	aim = Vector2i(facing, 0)
+	aim_vec = Vector2(aim)
 	inv = {"dirt": 0, "stone": 0, "copper": 0, "crystal": 0}
 	slots = []
 	for i in Cfg.SLOTS:
@@ -102,6 +105,7 @@ func spawn(col: int, ground_row: int) -> void:
 	hurt_t = 0.0
 	last_hit_by = -1
 	last_hit_at = -100.0
+	lava_cd = 0.0
 
 
 func pressed(inp: Dictionary, action: String) -> bool:
@@ -250,7 +254,7 @@ func predict_step(dt: float, inp: Dictionary, game) -> void:
 ## Everything movement needs to replay inputs exactly from this point.
 func net_state() -> Array:
 	return [x, y, vy, kvx, walk_v, on_ground, coyote, wall_coyote, wall_dir, last_wall, wall_lock,
-		jump_buffer, jump_cut_ready, stun, grapple, facing, aim, land_t, bool(held.get("jump", false))]
+		jump_buffer, jump_cut_ready, stun, grapple, facing, aim, land_t, bool(held.get("jump", false)), lava_cd]
 
 
 func set_net_state(a: Array) -> void:
@@ -259,6 +263,7 @@ func set_net_state(a: Array) -> void:
 	last_wall = int(a[9]); wall_lock = float(a[10]); jump_buffer = float(a[11]); jump_cut_ready = bool(a[12])
 	stun = float(a[13]); grapple = a[14]; facing = int(a[15]); aim = a[16]; land_t = float(a[17])
 	held = {"jump": bool(a[18])}
+	lava_cd = float(a[19]) if a.size() > 19 else 0.0
 	vel_x = walk_v + kvx
 
 
@@ -285,8 +290,10 @@ func _step_body(dt: float, inp: Dictionary, game) -> void:
 		pointer = mouse - centre()
 	elif inp.get("stick_aim") != null:
 		pointer = inp["stick_aim"]
+	aim_vec = Vector2(aim).normalized()
 	if pointer != null and pointer.length() > (0.6 if mouse != null else 0.5):
 		aim = OCTANTS[posmod(roundi(atan2(pointer.y, pointer.x) / (PI / 4.0)), 8)]
+		aim_vec = (pointer as Vector2).normalized()
 		if aim.x:
 			facing = aim.x                       # face where you aim, even walking backwards
 
@@ -307,6 +314,9 @@ func _move_body(dt: float, dx: int, inp: Dictionary, game) -> void:
 		jump_buffer = Cfg.JUMP_BUFFER
 	if on_ground:
 		last_wall = 0
+	lava_cd = maxf(0.0, lava_cd - dt)
+	if lava_cd == 0.0 and touching(world, World.LAVA):
+		_burn(game)
 
 	if grapple != null and _pull(dt, world):
 		return
@@ -350,13 +360,14 @@ func _move_body(dt: float, dx: int, inp: Dictionary, game) -> void:
 		vy *= Cfg.JUMP_CUT
 		jump_cut_ready = false
 
-	# Walking speed eases toward the input instead of snapping to it.
+	# Walking speed eases toward the input instead of snapping to it (slowly both ways on ice).
+	var grip := _grip(world) if on_ground else 1.0
 	if wall_lock > 0 or stun > 0:
 		walk_v = move_toward(walk_v, 0.0, Cfg.ACCEL_AIR * 0.5 * dt)
 	elif dx != 0:
-		walk_v = move_toward(walk_v, dx * Cfg.MOVE_SPEED, (Cfg.ACCEL_GROUND if on_ground else Cfg.ACCEL_AIR) * dt)
+		walk_v = move_toward(walk_v, dx * Cfg.MOVE_SPEED, (Cfg.ACCEL_GROUND * grip if on_ground else Cfg.ACCEL_AIR) * dt)
 	else:
-		walk_v = move_toward(walk_v, 0.0, (Cfg.FRICTION if on_ground else Cfg.ACCEL_AIR * 0.5) * dt)
+		walk_v = move_toward(walk_v, 0.0, (Cfg.FRICTION * grip if on_ground else Cfg.ACCEL_AIR * 0.5) * dt)
 
 	move(world, (walk_v + kvx) * dt, 0.0)
 	on_ground = false
@@ -365,6 +376,47 @@ func _move_body(dt: float, dx: int, inp: Dictionary, game) -> void:
 	if on_ground and fall_speed > Cfg.LAND_SPEED:
 		land_t = 0.12
 		game.sound("land")
+	elif fall_speed > 0 and vy < 0:
+		game.sound("jump")                           # bounced off slime
+
+
+## Friction under your feet: ICE_GRIP if you stand only on ice, else 1.
+func _grip(world: World) -> float:
+	var row := floori(y + H + 0.05)
+	var icy := false
+	for tx in range(floori(x), floori(x + W - 1e-6) + 1):
+		var t := world.get_tile(tx, row)
+		if t == World.ICE:
+			icy = true
+		elif world.solid(tx, row):
+			return 1.0
+	return Cfg.ICE_GRIP if icy else 1.0
+
+
+func touching(world: World, tile: int) -> bool:
+	for t: Vector2i in tiles():
+		if world.get_tile(t.x, t.y) == tile:
+			return true
+	return false
+
+
+## Lava: thrown straight up and burned. The launch is movement (so online prediction matches);
+## the damage goes through GameSim.hit_player when there is one (attacker null: no KO credit).
+func _burn(game) -> void:
+	lava_cd = Cfg.LAVA_COOLDOWN
+	if game.has_method("hit_player"):
+		game.hit_player(self, null, Vector2(0, -1), Cfg.LAVA_DAMAGE, 0.0)
+	else:
+		# What hit_player does with no knockback, so a predicting client moves the same way.
+		damage = minf(Cfg.MAX_DAMAGE, damage + Cfg.LAVA_DAMAGE)
+		kvx = 0.0
+		grapple = null
+		stun = Cfg.STUN_BASE
+		hurt_t = 0.15
+	vy = -Cfg.LAVA_LAUNCH
+	on_ground = false
+	jump_cut_ready = false
+	game.burst(Vector2(x + W / 2.0, y + H), Color(1.0, 0.5, 0.12), 14, 7.0, 0.5, 4, 5.0)
 
 
 ## Grapple: fly straight at the hook point. Returns true while still being pulled.
@@ -430,7 +482,7 @@ func _use_hands(dt: float, inp: Dictionary, game) -> void:
 		_stop_mining()
 	if inp.get("place", false) and place_cd == 0.0 and blocks() > 0:
 		var t := target(world, true)
-		if world.in_bounds(t.x, t.y) and not world.solid(t.x, t.y) and not game.player_in_tile(t.x, t.y):
+		if world.in_bounds(t.x, t.y) and world.get_tile(t.x, t.y) == World.EMPTY and not game.player_in_tile(t.x, t.y):
 			world.set_tile(t.x, t.y, World.PLACED)
 			inv["dirt" if inv["dirt"] > 0 else "stone"] -= 1
 			place_cd = Cfg.PLACE_COOLDOWN
@@ -440,7 +492,7 @@ func _use_hands(dt: float, inp: Dictionary, game) -> void:
 func _mine(dt: float, world: World, game) -> void:
 	var t := target(world, false)
 	var tile := world.get_tile(t.x, t.y)
-	if tile == World.EMPTY:
+	if tile == World.EMPTY or tile == World.LAVA:
 		_stop_mining()
 		return
 	if t != mine_target:
@@ -480,9 +532,16 @@ func move(world: World, mx: float, my: float) -> void:
 		kvx = 0.0
 		walk_v = 0.0
 	if my > 0:
-		y = hits.map(func(t): return t.y).min() - H
-		vy = 0.0
-		on_ground = true
+		var floor_row: int = hits.map(func(t): return t.y).min()
+		y = floor_row - H
+		var bouncy := false
+		for t: Vector2i in hits:
+			bouncy = bouncy or (t.y == floor_row and world.get_tile(t.x, t.y) == World.SLIME)
+		if bouncy and vy > Cfg.SLIME_MIN:
+			vy = -vy * Cfg.SLIME_BOUNCE                # slime throws you back up instead of landing
+		else:
+			vy = 0.0
+			on_ground = true
 	elif my < 0:
 		y = hits.map(func(t): return t.y).max() + 1
 		vy = 0.0

@@ -28,6 +28,7 @@ func _init() -> void:
 	test_convergence()
 	test_correction()
 	test_server_queue()
+	test_hit_online()
 	test_shake_fades()
 	print("all good" if failures == 0 else "%d FAILURES" % failures)
 	quit(0 if failures == 0 else 1)
@@ -57,6 +58,7 @@ class Net:
 	var to_client: Array = []         # [deliver_frame, {"state", "ack"}]
 	var max_smooth := 0.0             # biggest |me.smooth| seen right after a reconcile
 	var max_jump := 0.0               # biggest position change a reconcile caused
+	var total_jump := 0.0             # all of them added up
 	var idle: Dictionary
 
 	func _init(s: GameSim, idle_input: Dictionary) -> void:
@@ -81,6 +83,7 @@ class Net:
 				var before := Vector2(me.x, me.y)
 				client.reconcile(me, d["state"], d["ack"], world)
 				max_jump = maxf(max_jump, before.distance_to(Vector2(me.x, me.y)))
+				total_jump += before.distance_to(Vector2(me.x, me.y))
 				max_smooth = maxf(max_smooth, me.smooth.length())
 			else:
 				keep.append(m)
@@ -147,6 +150,7 @@ func test_convergence() -> void:
 func test_correction() -> void:
 	# Start further right so the knockback (~18 tiles left) stays over the floor.
 	var net := make_net(36)
+	net.sim.freeze_on_hit = false                # as online
 	var hit_frame := 20
 	var hit := func() -> void:
 		if net.frame == hit_frame:
@@ -158,8 +162,9 @@ func test_correction() -> void:
 	var e := net.error()
 	check(net.server_p().alive and net.me.alive, "P1 survives the knockback on both ends")
 	check(e.x < 0.05 and e.y < 0.05, "client ends up where the server put P1 (dx %.4f, dy %.4f)" % [e.x, e.y])
-	check(net.max_smooth > 0.0 or net.max_jump > 2.0,
-		"the correction was eased (max smooth %.3f) or dropped as a > 2 tile jump (%.3f)" % [net.max_smooth, net.max_jump])
+	# A knockback correction (several tiles) is eased, not snapped: only > MAX_SMOOTH (a respawn) snaps.
+	check(net.max_jump > 2.0 and net.max_smooth >= net.max_jump - 0.01 and net.max_jump < Pred.MAX_SMOOTH,
+		"the %.2f tile knockback correction was eased (max smooth %.3f)" % [net.max_jump, net.max_smooth])
 	print("correction: server x %.2f, client x %.2f, max smooth %.3f, biggest snap %.3f, error dx %.5f dy %.5f OK"
 		% [net.server_p().x, net.me.x, net.max_smooth, net.max_jump, e.x, e.y])
 
@@ -172,32 +177,85 @@ func queued(seq: int, extra := {}) -> Dictionary:
 
 func test_server_queue() -> void:
 	var q := Pred.ServerQueue.new()
+	check(q.next().is_empty() and q.acked == 0, "nothing received yet: empty input, nothing acked")
 	for s in range(1, 4):
-		q.push(queued(s))
+		q.push(queued(s, {"right": true}))
 	for s in range(1, 4):
 		var got: Dictionary = q.next()
 		check(int(got["seq"]) == s and q.acked == s, "next() #%d returns seq %d, acked %d" % [s, int(got["seq"]), q.acked])
-	var again: Dictionary = q.next()
-	check(int(again["seq"]) == 3 and q.acked == 3, "empty queue repeats seq 3, acked stays 3 (seq %d, acked %d)"
-		% [int(again["seq"]), q.acked])
 
-	# A burst of 7: one call should leave at most 2 queued, so acked hits 10 within 2 more calls.
-	# item1 is only true in seq 5, which is a likely merge victim.
-	for s in range(4, 11):
-		q.push(queued(s, {"item1": s == 5}))
+	# Seq 4 is late: the host stands in with a repeat of 3 AS seq 4, so acked advances.
+	var again: Dictionary = q.next()
+	check(int(again["seq"]) == 4 and q.acked == 4 and again["right"], "empty queue repeats the last input as seq 4 (seq %d, acked %d)"
+		% [int(again["seq"]), q.acked])
+	# The real seq 4 turns up with a fresh jump press, and seq 5 without it (a one-frame tap).
+	# Seq 4 is dropped (already stood in for), but its jump press is carried into seq 5.
+	q.push(queued(4, {"right": true, "jump": true}))
+	q.push(queued(5, {"right": true}))
+	var five: Dictionary = q.next()
+	check(int(five["seq"]) == 5 and q.acked == 5, "the late seq 4 is dropped: next is seq 5 (seq %d, acked %d)" % [int(five["seq"]), q.acked])
+	check(bool(five.get("jump", false)), "the late input's jump press survives in the next input applied")
+	check(q.queue.is_empty(), "nothing left queued")
+	# A late input with no new press is just dropped, and nothing extra is carried.
+	q.next()                                     # stands in for 6
+	q.push(queued(6, {"right": true}))
+	q.push(queued(7, {"right": true}))
+	var seven: Dictionary = q.next()
+	check(int(seven["seq"]) == 7 and not bool(seven.get("jump", false)), "a late input without a press carries nothing")
+
+	# A burst of 7: one call should leave at most 2 queued, so acked hits 14 within 2 more calls.
+	# item1 is only true in seq 9, which is a likely merge victim.
+	for s in range(8, 15):
+		q.push(queued(s, {"item1": s == 9}))
 	var results: Array[Dictionary] = []
 	var acks: Array[int] = []
 	for i in 4:
 		results.append(q.next())
 		acks.append(q.acked)
-	check(acks[0] > 4, "first call after a burst merges (acked jumped to %d)" % acks[0])
-	check(acks[2] == 10, "<= 2 left after one call: acked reaches 10 by the third call (%s)" % str(acks))
-	check(acks[3] == 10, "acked stays at 10 once empty (%s)" % str(acks))
+	check(acks[0] > 8, "first call after a burst merges (acked jumped to %d)" % acks[0])
+	check(acks[2] == 14, "<= 2 left after one call: acked reaches 14 by the third call (%s)" % str(acks))
+	check(acks[3] == 15, "once empty, the repeat stands in for seq 15 (%s)" % str(acks))
 	var item_seen := false
 	for r in results:
 		item_seen = item_seen or bool(r.get("item1", false))
 	check(item_seen, "an action pressed only in a merged-away input survives the merge")
-	print("server queue: FIFO 1..3, empty repeats, burst of 7 acked %s, merged item1 kept %s OK" % [str(acks), str(item_seen)])
+
+	# A long stall (the client stopped sending): stand-ins stop after MAX_STAND_IN, so the host
+	# doesn't run ahead of the client forever.
+	for i in 30:
+		q.next()
+	check(q.acked == 14 + Pred.MAX_STAND_IN, "stand-ins stop after %d (acked %d)" % [Pred.MAX_STAND_IN, q.acked])
+	q.push(queued(q.acked + 1))
+	check(int(q.next()["seq"]) == q.acked and q.acked == 15 + Pred.MAX_STAND_IN, "inputs after a stall are applied again")
+	print("server queue: FIFO 1..3, late seq stood in + dropped with its jump kept, burst of 7 acked %s, merged item1 kept %s, stall capped OK"
+		% [str(acks), str(item_seen)])
+
+
+## Online the host must not freeze on a hit: it used to skip the sim during hitstop while still
+## taking each remote player's next input, so those inputs (here: a jump) were never applied and
+## the client, which predicted them, got snapped back to the ground.
+func hit_during_jump(freeze: bool) -> Net:
+	var net := make_net()
+	net.sim.freeze_on_hit = freeze
+	var hit := func() -> void:
+		if net.frame == 20:
+			net.sim.hit_player(net.sim.players[1], null, Vector2(1, -0.4).normalized(), 0.0, 9.0)
+	for f in 30:
+		net.step(with({"jump": f >= 15 and f <= 24}), hit)  # the press reaches the host in the freeze
+	for f in 60:
+		net.step(with({}))
+	return net
+
+
+func test_hit_online() -> void:
+	var online := hit_during_jump(false)
+	var e := online.error()
+	check(online.sim.hitstop == 0.0, "online: no hitstop")
+	check(online.total_jump < 0.01, "online: a hit elsewhere doesn't correct my jump (%.3f tiles in all)" % online.total_jump)
+	check(e.x < 0.01 and e.y < 0.01, "online: client and server agree (dx %.4f, dy %.4f)" % [e.x, e.y])
+	var frozen := hit_during_jump(true)
+	check(frozen.total_jump > 0.3, "with the old freeze the jump inputs are lost and the client gets corrected (%.3f tiles in all)" % frozen.total_jump)
+	print("hit online: no freeze, corrections %.4f tiles in all (with the freeze: %.2f) OK" % [online.total_jump, frozen.total_jump])
 
 
 ## Regression: online clients kept the max shake ever received, so the screen shook forever.

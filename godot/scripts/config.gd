@@ -35,8 +35,9 @@ const LAND_SPEED := 12.0          # landing faster than this plays "land"
 # Blocks and items
 const REACH := 2.5                # mouse targeting: tiles from player centre to tile centre
 # Seconds of holding "mine" to break a tile. Int keys match World's enum (config can't use
-# World's names): DIRT=1, STONE=2, PLACED=3, COPPER=4, CRYSTAL=5.
-const MINE_TIME := {1: 0.22, 2: 0.45, 3: 0.18, 4: 0.55, 5: 0.65}
+# World's names): DIRT=1, STONE=2, PLACED=3, COPPER=4, CRYSTAL=5, SAND=6, ICE=7, SLIME=8,
+# LAVA=9 (can't be mined), TNT=10.
+const MINE_TIME := {1: 0.22, 2: 0.45, 3: 0.18, 4: 0.55, 5: 0.65, 6: 0.12, 7: 0.35, 8: 0.25, 10: 0.3}
 const PLACE_COOLDOWN := 0.12
 const CARRY_LIMIT := 15           # dirt + stone
 const ORE_LIMIT := 9
@@ -51,6 +52,20 @@ const MIN_NEAR := 35
 # Per ore: every spawn gets the same amount within this many tiles (a square), and at least min
 const ORE_NEAR := {"copper": {"radius": 4, "min": 2}, "crystal": {"radius": 6, "min": 1}}
 
+# Biomes and arena shapes: each round the host picks one of each at random
+const BIOMES := ["meadow", "desert", "tundra", "volcano", "mushroom"]
+const SHAPES := ["islands", "mountain", "towers", "caves"]
+const SAND_FALL := 0.12           # unsupported sand drops one tile this often
+const ICE_GRIP := 0.25            # on ice, walking speeds up and slows down at this fraction of normal
+const SLIME_MIN := 6.0            # landing on slime faster than this bounces you...
+const SLIME_BOUNCE := 0.75        # ...back up at this fraction of the landing speed  # < ~0.8 so bounces die out (falling gravity is 1.5x)
+const LAVA_LAUNCH := 16.0         # touching lava throws you up at this speed...
+const LAVA_DAMAGE := 12.0         # ...and burns this much damage %...
+const LAVA_COOLDOWN := 0.5        # ...at most this often
+const LAVA_SAFE := 6              # no lava within this many tiles of a spawn (a square), nor below one
+const TNT_FUSE := 1.0             # mined or blasted TNT explodes this long later, like a bomb
+const TNT_SAFE := 5               # no TNT within this many tiles of a spawn
+
 # Arena: 40 tiles wide for 2 players, +10 per extra player (60 = full screen for 4)
 const ARENA_BASE := 20
 const ARENA_PER_PLAYER := 10
@@ -64,8 +79,8 @@ const CRUMBLE_WARN := 1.0         # a block shakes this long before it breaks
 const SWING_COOLDOWN := 0.35
 const SWING_DAMAGE := 8.0
 const SWING_KNOCK := 9.0          # knockback speed at 0%
-const SWING_REACH := 1.0          # hit box sits this far in front of you...
-const SWING_BOX := Vector2(1.5, 1.7)   # ...and is this big
+const SWING_REACH := 1.1          # hit box sits this far in front of you (along the exact aim)...
+const SWING_BOX := Vector2(1.8, 1.9)   # ...and is this big
 const KNOCK_GROWTH := 60.0        # knockback = base * (1 + damage / KNOCK_GROWTH): 2x at 60%, 3x at 120%
 const MAX_DAMAGE := 300.0
 const STUN_BASE := 0.1            # after a hit you can't walk for STUN_BASE + knock * STUN_PER_KNOCK seconds
@@ -107,7 +122,7 @@ const PUBLIC_SERVER := "arena.tylergunn.me"   # "Play online" on the title scree
 # Game version. Online, the host and every player must match exactly: it's sent as the
 # WebSocket subprotocol, so a different version can't even connect (no silent breakage).
 # The release workflow checks that the git tag (vX.Y.Z) matches this.
-const GAME_VERSION := "0.5.4"
+const GAME_VERSION := "0.6.0"
 const NET_PROTOCOL := "arena-" + GAME_VERSION
 
 const PLAYER_COLORS := [Color(1.0, 0.42, 0.42), Color(0.31, 0.66, 1.0), Color(1.0, 0.82, 0.25), Color(0.72, 0.48, 1.0)]

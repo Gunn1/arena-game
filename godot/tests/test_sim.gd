@@ -21,6 +21,7 @@ func with(extra: Dictionary) -> Dictionary:
 
 func _init() -> void:
 	test_maps()
+	test_biomes()
 	test_wall_jump()
 	test_mouse_aim()
 	test_movement()
@@ -29,6 +30,7 @@ func _init() -> void:
 	test_items()
 	test_fighting()
 	test_hitstop()
+	test_rewind()
 	test_zone()
 	test_matches()
 	print("all good" if failures == 0 else "%d FAILURES" % failures)
@@ -89,6 +91,205 @@ func ore_near(w: World, s: Vector2i, ore: String, r: int) -> int:
 			if w.get_tile(x, y) == tile:
 				n += 1
 	return n
+
+
+# --- biomes, shapes and their special blocks ---------------------------------------------
+
+func test_biomes() -> void:
+	# Random picks: every biome and shape shows up.
+	var w := World.new()
+	var seen := {}
+	for seed_value in range(1, 101):
+		w.generate(seed_value, 2)
+		seen[w.biome] = true
+		seen[w.shape] = true
+	for name: String in Cfg.BIOMES + Cfg.SHAPES:
+		check(seen.has(name), "%s appears in 100 random maps" % name)
+
+	# Every biome x shape x player count keeps the map guarantees.
+	var maps := 0
+	var start := Time.get_ticks_msec()
+	var specials := {"desert": World.SAND, "tundra": World.ICE, "mushroom": World.SLIME, "volcano": World.LAVA}
+	var special_maps := {}
+	var tnt_maps := 0
+	for biome: String in Cfg.BIOMES:
+		for shape: String in Cfg.SHAPES:
+			for players: int in [2, 3, 4]:
+				for seed_value in range(1, 4):
+					w.generate(seed_value * 7 + players, players, biome, shape)
+					maps += 1
+					var tag := "%s %s %dp seed %d" % [biome, shape, players, seed_value]
+					check_guarantees(w, players, tag)
+					var counts := {}
+					for t in w.grid:
+						counts[t] = counts.get(t, 0) + 1
+					if specials.has(biome) and counts.get(specials[biome], 0) > 0:
+						special_maps[biome] = special_maps.get(biome, 0) + 1
+					for tile: int in specials.values():
+						if tile != specials.get(biome, -1):
+							check(counts.get(tile, 0) == 0, "%s: no %d outside its biome" % [tag, tile])
+					if counts.get(World.TNT, 0) > 0:
+						tnt_maps += 1
+	var ms := float(Time.get_ticks_msec() - start) / maps
+	check(ms < 60.0, "maps generate in under 60 ms (%.1f)" % ms)
+	for biome: String in specials:
+		check(special_maps.get(biome, 0) >= 30, "%s has its special block in most maps (%d/36)" % [biome, special_maps.get(biome, 0)])
+	check(tnt_maps > maps / 2, "TNT shows up in most maps (%d/%d)" % [tnt_maps, maps])
+
+	# Sand: falls one tile per SAND_FALL into air, lands on the floor, and stops above a player.
+	w = World.new()
+	w.grid.fill(0)
+	w.set_tile(10, 30, World.STONE)
+	w.set_tile(10, 10, World.SAND)
+	w.set_tile(10, 9, World.SAND)
+	w.record = true
+	var t := 0.0
+	while t < 0.5:
+		w.update(Cfg.DT)
+		t += Cfg.DT
+	var low := -1
+	for y in Cfg.ROWS:
+		if w.get_tile(10, y) == World.SAND:
+			low = y
+	check(low >= 12 and low <= 15, "sand falls about one tile per %.2f s (lowest at row %d after 0.5 s)" % [Cfg.SAND_FALL, low])
+	check(w.changes.size() > 0 and w.broken.is_empty(), "falling sand is synced as tile changes and leaves no debris")
+	while t < 4.0:
+		w.update(Cfg.DT)
+		t += Cfg.DT
+	check(w.get_tile(10, 29) == World.SAND and w.get_tile(10, 28) == World.SAND, "sand piles up on the floor")
+	var sim := floor_sim()
+	var p: Player = sim.players[0]
+	sim.world.set_tile(15, 14, World.SAND)
+	run(sim, 90)
+	var head := floori(p.y)
+	check(sim.world.get_tile(15, head - 1) == World.SAND, "sand stops on top of a player (sand at row %d, head %d)" % [_sand_row(sim.world, 15), head])
+
+	# Ice: let go of walking and you slide much farther than on stone.
+	var slide := {}
+	for tile: int in [World.STONE, World.ICE]:
+		sim = floor_sim()
+		for x in range(10, 50):
+			sim.world.grid[20 * Cfg.COLS + x] = tile
+		p = sim.players[0]
+		run(sim, 5)
+		run(sim, 60, [with({"right": true}), IDLE])
+		var from := p.x
+		run(sim, 90)
+		slide[tile] = p.x - from
+	check(slide[World.ICE] > slide[World.STONE] * 2.5, "ice slides farther than stone (%.2f vs %.2f tiles)" % [slide[World.ICE], slide[World.STONE]])
+
+	# Slime: a hard landing bounces back up at SLIME_BOUNCE of the speed; standing on it is fine.
+	sim = floor_sim()
+	for x in range(10, 50):
+		sim.world.grid[20 * Cfg.COLS + x] = World.SLIME
+	p = sim.players[0]
+	run(sim, 5)
+	check(p.on_ground, "you can stand on slime")
+	p.y -= 6.0
+	var ratio := 0.0
+	for f in 120:
+		var before := p.vy
+		run(sim, 1)
+		if before > 0 and p.vy < 0:
+			ratio = -p.vy / before
+			break
+	check(ratio > 0.75 and ratio < 0.95, "slime bounces at ~%.2f of the landing speed (%.2f)" % [Cfg.SLIME_BOUNCE, ratio])
+
+	# Lava: not solid; touching it throws you up and burns LAVA_DAMAGE, at most every LAVA_COOLDOWN.
+	sim = floor_sim()
+	p = sim.players[0]
+	run(sim, 5)
+	var stand_y := p.y
+	sim.world.set_tile(15, 19, World.LAVA)
+	check(not sim.world.solid(15, 19), "lava isn't solid")
+	run(sim, 1)
+	var first_vy := p.vy
+	check(p.damage == Cfg.LAVA_DAMAGE, "lava burns %d%% (%.1f)" % [int(Cfg.LAVA_DAMAGE), p.damage])
+	run(sim, 10)
+	check(first_vy < -Cfg.LAVA_LAUNCH * 0.9 and p.y < stand_y - 0.8, "lava throws you up (vy %.1f, rose %.2f)" % [first_vy, stand_y - p.y])
+	p.y = stand_y                                   # dropped straight back in: still cooling down
+	p.vy = 0.0
+	run(sim, 1)
+	check(p.damage == Cfg.LAVA_DAMAGE, "lava burns at most once per %.1f s (%.1f)" % [Cfg.LAVA_COOLDOWN, p.damage])
+	check(p.last_hit_by == -1, "lava gives nobody KO credit")
+	var sim2 := floor_sim()
+	sim2.world.set_tile(16, 19, World.LAVA)          # right beside P1, not touching
+	run(sim2, 30, [with({"mine": true}), IDLE])
+	run(sim2, 30, [with({"mine": true, "mouse": Vector2(16.5, 19.5)}), IDLE])
+	check(sim2.world.get_tile(16, 19) == World.LAVA and sim2.players[0].damage == 0.0, "lava can't be mined (%d)" % sim2.world.get_tile(16, 19))
+	# The client's prediction (no GameSim) moves the same way.
+	var g := FakeGame.new()
+	g.world.grid = sim.world.grid.duplicate()
+	var q := Player.new(0)
+	q.spawn(15, 20)
+	q.update(Cfg.DT, IDLE, g)
+	check(q.damage == Cfg.LAVA_DAMAGE and q.vy < -Cfg.LAVA_LAUNCH * 0.9, "lava without GameSim: burn %.1f, vy %.1f" % [q.damage, q.vy])
+
+	# TNT: mining it lights it; ~TNT_FUSE later it blows up like a bomb, credited to the miner.
+	sim = floor_sim()
+	var miner: Player = sim.players[0]
+	var victim: Player = sim.players[1]
+	victim.spawn(18, 20)
+	sim.world.set_tile(16, 19, World.TNT)
+	var n := hold_mine(sim, Vector2i(16, 19), {}, 60)
+	check(n > 0 and sim.bombs.size() == 1 and int(sim.bombs[0]["owner"]) == 0, "mined TNT is lit, owned by the miner")
+	var frames := 0
+	while sim.bombs.size() > 0 and frames < 200:
+		run(sim, 1)
+		frames += 1
+	check(absf(frames * Cfg.DT - Cfg.TNT_FUSE) < 0.15, "TNT goes off ~%.1f s after it's lit (%.2f s)" % [Cfg.TNT_FUSE, frames * Cfg.DT])
+	check(victim.damage > 0 and victim.last_hit_by == 0, "the blast hits nearby players, credited to the miner (%.1f%%, by %d)" % [victim.damage, victim.last_hit_by])
+	check(not sim.world.solid(17, 20) and not sim.world.solid(16, 20), "the blast breaks blocks")
+	# A bomb that blasts TNT lights it for the bomb's owner.
+	sim = floor_sim()
+	sim.world.set_tile(30, 19, World.TNT)
+	sim.bombs.append({"x": 31.5, "y": 19.5, "vx": 0.0, "vy": 0.0, "fuse": 0.01, "owner": 1})
+	run(sim, 2)
+	check(sim.bombs.size() == 1 and int(sim.bombs[0]["owner"]) == 1, "a bomb sets off TNT for its owner")
+	print("biomes: all %d biomes and %d shapes appear; %d maps keep the guarantees, %.1f ms per map; sand, ice (%.1f vs %.1f tiles), slime (x%.2f), lava, TNT OK"
+		% [Cfg.BIOMES.size(), Cfg.SHAPES.size(), maps, ms, slide[World.ICE], slide[World.STONE], ratio])
+
+
+func _sand_row(w: World, x: int) -> int:
+	for y in Cfg.ROWS:
+		if w.get_tile(x, y) == World.SAND:
+			return y
+	return -1
+
+
+## Everything a generated map promises, whatever the biome and shape.
+func check_guarantees(w: World, players: int, tag: String) -> void:
+	var width: int = mini(Cfg.COLS, Cfg.ARENA_BASE + Cfg.ARENA_PER_PLAYER * players)
+	check(w.arena_right - w.arena_left == width and w.spawns.size() == players, "%s: arena and spawn count" % tag)
+	var solid := 0
+	for i in w.grid.size():
+		if w.solid(i % Cfg.COLS, i / Cfg.COLS):
+			solid += 1
+	check(float(solid) / (width * (Cfg.ROWS - Cfg.TOP_ROW)) >= Cfg.MIN_FILL, "%s: at least MIN_FILL solid" % tag)
+	check(w.spread <= Cfg.FAIR_SPREAD + 1e-6, "%s: spawns within FAIR_SPREAD (%.2f)" % [tag, w.spread])
+	for i in w.spawns.size():
+		var s: Vector2i = w.spawns[i]
+		var slot: int = w.arena_left + roundi(width * (i + 1.0) / (players + 1.0))
+		check(absi(s.x - slot) <= 2, "%s: spawn %d near its slot" % [tag, i])
+		check(w.solid(s.x, s.y) and w.get_tile(s.x, s.y - 1) == World.EMPTY and w.get_tile(s.x, s.y - 2) == World.EMPTY,
+			"%s: spawn %d on ground with headroom" % [tag, i])
+		check(w._blocks_near(w.grid, s.x, s.y) >= Cfg.MIN_NEAR, "%s: spawn %d has MIN_NEAR blocks around" % [tag, i])
+	for ore: String in Cfg.ORE_NEAR:
+		var rule: Dictionary = Cfg.ORE_NEAR[ore]
+		var counts: Array[int] = []
+		for s: Vector2i in w.spawns:
+			counts.append(ore_near(w, s, ore, rule["radius"]))
+		check(counts.min() >= int(rule["min"]) and counts.min() == counts.max(), "%s: equal %s near spawns %s" % [tag, ore, str(counts)])
+	for y in Cfg.ROWS:
+		for x in Cfg.COLS:
+			var tile := w.get_tile(x, y)
+			if tile == World.LAVA or tile == World.TNT:
+				var safe: int = Cfg.LAVA_SAFE if tile == World.LAVA else Cfg.TNT_SAFE
+				for s: Vector2i in w.spawns:
+					check(maxi(absi(x - s.x), absi(y - s.y)) > safe, "%s: %d at %d,%d too close to spawn %s" % [tag, tile, x, y, str(s)])
+					check(tile != World.LAVA or x != s.x, "%s: lava under a spawn" % tag)
+			if tile == World.SAND:
+				check(w.get_tile(x, y + 1) != World.EMPTY, "%s: no loose sand at the start (%d,%d)" % [tag, x, y])
 
 
 class FakeGame:
@@ -668,6 +869,68 @@ func test_hitstop() -> void:
 	var heavy: float = sim.hitstop
 	check(heavy > light and heavy <= 0.14 + 0.001, "heavier hit, longer hitstop (%.3f vs %.3f, max 0.14)" % [heavy, light])
 	print("hitstop: %.3f s light, %.3f s heavy, %d frames frozen, freeze then fly OK" % [light, heavy, frozen])
+
+	# Online (freeze_on_hit off): nothing freezes and every input is applied; the hit only
+	# sets hit_flash for the impact look, which is in the snapshot and fades out.
+	sim = fight_sim(0.0, 15.1)
+	sim.freeze_on_hit = false
+	var p: Player = sim.players[0]
+	q = sim.players[1]
+	sim.update(Cfg.DT, [with({"mine": true}), IDLE])
+	check(q.last_hit_by == 0, "online: the swing lands")
+	check(sim.hitstop == 0.0, "online: a hit doesn't start hitstop (%.3f)" % sim.hitstop)
+	check(sim.hit_flash > 0.0 and sim.impact(), "online: a hit starts the hit flash (%.3f)" % sim.hit_flash)
+	var client := GameSim.new()
+	client.apply_snapshot(sim.snapshot())
+	check(client.hit_flash == sim.hit_flash and client.impact(), "online: the hit flash is in the snapshot")
+	qx = q.x
+	var px := p.x
+	var moved_every_frame := true
+	var flash_frames := 0
+	for f in 12:
+		var before := p.x
+		sim.update(Cfg.DT, [with({"left": true}), IDLE])
+		moved_every_frame = moved_every_frame and p.x < before
+		if sim.hit_flash > 0.0:
+			flash_frames += 1
+	check(q.x > qx + 0.05, "online: the victim flies straight away (moved %.2f)" % (q.x - qx))
+	check(moved_every_frame and p.x < px, "online: the attacker's input is applied every frame of the flash")
+	check(sim.hit_flash == 0.0 and not sim.impact(), "online: the hit flash fades (%d frames)" % flash_frames)
+	print("hitstop online: no freeze, flash %.3f s (%d frames), victim moved %.2f, no inputs dropped OK"
+		% [light, flash_frames, q.x - qx])
+
+
+## Lag compensation: a remote swing (its input carries "view", the tick the attacker was seeing
+## the others at) is tested against where the target was then. q stands next to p for the first
+## `near` ticks, then is 3+ tiles away (out of reach). view_ago -1: no view (a local swing).
+func rewind_swing(view_ago: int, frames: int, near: int) -> bool:
+	var sim := fight_sim(0.0, 15.1)
+	sim.freeze_on_hit = false
+	var q: Player = sim.players[1]
+	var x0 := q.x
+	for f in frames:
+		q.x = x0 if f < near else x0 + 3.0 + f * 0.05
+		sim.update(Cfg.DT, [IDLE, IDLE])
+	var inp := with({"mine": true})
+	if view_ago != -1:
+		inp["view"] = float(sim.tick - view_ago)
+	sim.update(Cfg.DT, [inp, IDLE])
+	return q.last_hit_by == 0
+
+
+func test_rewind() -> void:
+	# The target was in reach 12 ticks (200 ms) ago and has moved out of reach since.
+	var rewound := rewind_swing(11, 12, 2)
+	var current := rewind_swing(-1, 12, 2)
+	check(rewound, "a swing aimed at where the target was (view 200 ms back) hits")
+	check(not current, "without the rewind the same swing misses (the target has moved away)")
+	# In reach only 30 ticks (500 ms) ago: the rewind stops at 300 ms, so it misses.
+	var too_old := rewind_swing(29, 30, 2)
+	check(not too_old, "no rewinding more than 300 ms")
+	# A view in the future (or garbage) is clamped to now.
+	var future := rewind_swing(-20, 12, 2)
+	check(not future, "a view newer than now uses current positions")
+	print("rewind: 200 ms back hits %s, no rewind hits %s, 500 ms back hits %s OK" % [rewound, current, too_old])
 
 
 func test_zone() -> void:

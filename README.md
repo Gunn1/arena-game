@@ -48,7 +48,21 @@ To run an always-on server that browser players can join at `wss://arena.<your-d
 - **Crafting:** one press crafts the most valuable item you can afford; your HUD shows what it'll make (or what you still need).
 - **Wall jump:** jump while touching a wall in the air; not off the same side twice in a row.
 - **Local games:** 2/3/4 on the title screen. P2 uses the right side of the keyboard unless a controller is plugged in; P3 and P4 need controllers.
-- M = mute, Esc = back.
+- M = mute, N = music on/off, Esc = back.
+
+## Biomes and arenas
+
+Every round picks a biome and an arena shape (shown in the round banner).
+
+| Biome | Special blocks |
+|---|---|
+| Meadow | the classic look |
+| Desert | sand on top that falls when nothing holds it up |
+| Tundra | ice: you speed up and slide 4x slower |
+| Mushroom | slime pads: land hard and bounce back up |
+| Volcano | lava pools: touching them launches you up and burns 12% |
+
+Any biome can have TNT: mine it (or blow it up) and it explodes a second later, credited to whoever set it off. Shapes: islands, mountain, towers with bridges, caves.
 
 ## Items
 

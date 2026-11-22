@@ -2,8 +2,10 @@
 class_name World
 extends RefCounted
 
-enum { EMPTY, DIRT, STONE, PLACED, COPPER, CRYSTAL }
-const DROPS := {DIRT: "dirt", PLACED: "dirt", STONE: "stone", COPPER: "copper", CRYSTAL: "crystal"}
+# New types go at the end so the numbers (sent online, used by Cfg.MINE_TIME) never change.
+enum { EMPTY, DIRT, STONE, PLACED, COPPER, CRYSTAL, SAND, ICE, SLIME, LAVA, TNT }
+const DROPS := {DIRT: "dirt", PLACED: "dirt", STONE: "stone", COPPER: "copper", CRYSTAL: "crystal",
+	SAND: "dirt", ICE: "stone", SLIME: "dirt"}
 const ORE_TILES := {"copper": COPPER, "crystal": CRYSTAL}
 const COLS := Cfg.COLS
 const ROWS := Cfg.ROWS
@@ -25,6 +27,13 @@ var dirty: Array = []             # Vector2i tiles to redraw
 var record := false               # host: log changes to send to clients
 var changes: Array = []           # ["t", x, y, tile, cause] / ["w", x, y] warning
 var version := 0                  # bumps every new map
+var biome := "meadow"             # one of Cfg.BIOMES: colours and special blocks
+var shape := "islands"            # one of Cfg.SHAPES: how the terrain is laid out
+var actor := -1                   # player index breaking tiles right now (GameSim sets it), for TNT credit
+var lit: Array = []               # [x, y, actor] TNT set off since GameSim last drained it
+var occupied := Callable()        # (x, y) -> bool: a player is in that tile (sand won't fall into it)
+var sand_t := 0.0
+var _players := 2                 # while generating
 
 
 func _init() -> void:
@@ -39,25 +48,32 @@ func get_tile(x: int, y: int) -> int:
 	return grid[y * COLS + x] if in_bounds(x, y) else EMPTY
 
 
+## Lava is in the grid but isn't solid: you fall into it (and get thrown out).
 func solid(x: int, y: int) -> bool:
-	return get_tile(x, y) != EMPTY
+	var t := get_tile(x, y)
+	return t != EMPTY and t != LAVA
 
 
 func set_tile(x: int, y: int, tile: int, cause := "mine") -> void:
 	if not in_bounds(x, y):
 		return
 	var old := grid[y * COLS + x]
-	grid[y * COLS + x] = tile
 	if old == tile:
 		return
+	if old == LAVA and tile == EMPTY and cause in ["mine", "bomb", "laser"]:
+		return                                       # lava can't be dug or blasted away (the zone still takes it)
+	grid[y * COLS + x] = tile
 	var pos := Vector2i(x, y)
 	if record:
 		changes.append(["t", x, y, tile, cause])
 	if tile != EMPTY and zone_started() and (x < next_left or x > next_right):
 		warn(x, y)                                   # built outside the zone: it crumbles too
 	if tile == EMPTY:
-		broken.append([x, y, old, cause])
+		if cause != "sand":                          # falling sand just moves: no debris
+			broken.append([x, y, old, cause])
 		warnings.erase(pos)
+		if old == TNT:
+			lit.append([x, y, actor])
 	dirty.append(pos)
 
 
@@ -102,6 +118,7 @@ func zone_progress() -> float:
 
 
 func update(dt: float) -> void:
+	actor = -1                                       # the zone and sand belong to nobody
 	elapsed += dt
 	for pos in warnings.keys():
 		warnings[pos] -= dt
@@ -117,6 +134,24 @@ func update(dt: float) -> void:
 	while next_right >= ceili(zone_right) and next_right >= next_left:
 		_warn_column(next_right)
 		next_right -= 1
+	_update_sand(dt)
+
+
+## Host: every SAND_FALL seconds, sand with air below drops one tile (whole columns together,
+## since the scan goes bottom-up). Crumbling sand stays put; so does sand above a player.
+func _update_sand(dt: float) -> void:
+	sand_t += dt
+	if sand_t < Cfg.SAND_FALL:
+		return
+	sand_t -= Cfg.SAND_FALL
+	for y in range(ROWS - 2, -1, -1):
+		for x in COLS:
+			if grid[y * COLS + x] != SAND or grid[(y + 1) * COLS + x] != EMPTY or warnings.has(Vector2i(x, y)):
+				continue
+			if occupied.is_valid() and occupied.call(x, y + 1):
+				continue
+			set_tile(x, y, EMPTY, "sand")
+			set_tile(x, y + 1, SAND, "sand")
 
 
 func _warn_column(x: int) -> void:
@@ -127,14 +162,22 @@ func _warn_column(x: int) -> void:
 
 # --- generation --------------------------------------------------------------------------
 
-func generate(seed_value: int, players: int) -> void:
+## force_biome / force_shape (tests) skip the random pick.
+func generate(seed_value: int, players: int, force_biome := "", force_shape := "") -> void:
 	rng.seed = seed_value
+	biome = Cfg.BIOMES[rng.randi_range(0, Cfg.BIOMES.size() - 1)]
+	shape = Cfg.SHAPES[rng.randi_range(0, Cfg.SHAPES.size() - 1)]
+	if force_biome != "":
+		biome = force_biome
+	if force_shape != "":
+		shape = force_shape
+	_players = players
 	var width := mini(COLS, Cfg.ARENA_BASE + Cfg.ARENA_PER_PLAYER * players)
 	arena_left = (COLS - width) / 2
 	arena_right = arena_left + width
 	var best := []
 	for attempt in 40:
-		var g := _random_terrain()
+		var g := _terrain()
 		if _fill_ratio(g) < Cfg.MIN_FILL:
 			continue
 		var picked := _pick_spawns(g, players)
@@ -151,7 +194,11 @@ func generate(seed_value: int, players: int) -> void:
 	_assign_types(grid)
 	_add_ores(grid)
 	_even_out_ores(grid, spawns)
+	_dress(grid)
 	warnings.clear()
+	lit.clear()
+	sand_t = 0.0
+	actor = -1
 	broken.clear()
 	changes.clear()
 	dirty.clear()
@@ -187,7 +234,42 @@ func _noise_field(cell: int) -> PackedFloat32Array:
 	return out
 
 
-func _random_terrain() -> PackedByteArray:
+func _terrain() -> PackedByteArray:
+	match shape:
+		"mountain":
+			return _mountain()
+		"towers":
+			return _towers()
+		"caves":
+			return _caves()
+	return _islands()
+
+
+func _blank() -> PackedByteArray:
+	var g := PackedByteArray()
+	g.resize(COLS * ROWS)
+	return g
+
+
+## Column x seen in a mirror at the arena's centre (so a shape can be left/right symmetric).
+func _mirror(x: int) -> int:
+	return arena_left + arena_right - 1 - x
+
+
+## The column player i spawns near (same formula as _pick_spawns).
+func _slot(i: int) -> int:
+	return arena_left + roundi((arena_right - arena_left) * (i + 1.0) / (_players + 1.0))
+
+
+func _near_slot(x: int, r: int) -> bool:
+	for i in _players:
+		if absi(x - _slot(i)) <= r:
+			return true
+	return false
+
+
+## Islands: floating blobs from two layers of noise.
+func _islands() -> PackedByteArray:
 	var big := _noise_field(7)
 	var small := _noise_field(3)
 	var g := PackedByteArray()
@@ -198,6 +280,143 @@ func _random_terrain() -> PackedByteArray:
 			if big[y * COLS + x] * 0.7 + small[y * COLS + x] * 0.3 + depth * 0.1 > 0.55:
 				g[y * COLS + x] = DIRT
 	g = _smooth(g)
+	_remove_specks(g, 6)
+	return g
+
+
+## Mountain: one big symmetric mass, high in the middle, with a few tunnels wormed through it.
+func _mountain() -> PackedByteArray:
+	var g := _blank()
+	var bumps := _noise_field(3)
+	var cx := (arena_left + arena_right) / 2.0
+	var half := (arena_right - arena_left) / 2.0 - 1.0
+	var peak := rng.randf_range(11.0, 14.0)
+	var foot := rng.randf_range(20.0, 23.0)
+	var base := ROWS - 3.0 - rng.randf_range(0.0, 2.0)
+	for x in range(arena_left + 1, arena_right - 1):
+		var u := absf(x + 0.5 - cx) / half
+		var nx := mini(x, _mirror(x))
+		var top := lerpf(peak, foot, u * u) + (bumps[12 * COLS + nx] - 0.5) * 4.0
+		var bottom := base - 6.0 * u * u + (bumps[28 * COLS + nx] - 0.5) * 3.0
+		for y in range(maxi(Cfg.TOP_ROW, roundi(top)), mini(ROWS - 2, roundi(bottom) + 1)):
+			g[y * COLS + x] = DIRT
+	g = _smooth(g)
+	# Each column's first and last solid row: tunnels keep 2 tiles of rock above and below them.
+	var tops := PackedInt32Array()
+	var bottoms := PackedInt32Array()
+	tops.resize(COLS)
+	bottoms.resize(COLS)
+	for x in COLS:
+		tops[x] = ROWS
+		bottoms[x] = -1
+		for y in ROWS:
+			if g[y * COLS + x] != EMPTY:
+				tops[x] = mini(tops[x], y)
+				bottoms[x] = y
+	for i in rng.randi_range(2, 4):
+		var sx := rng.randf_range(cx - half * 0.7, cx + half * 0.7)
+		var surf := tops[floori(sx)]
+		_worm(g, sx, rng.randf_range(surf + 3.0, surf + 8.0), rng.randi_range(10, 20), tops, bottoms)
+	_remove_specks(g, 6)
+	return g
+
+
+## Carve a mostly sideways tunnel, 3 tiles tall, by wandering from (x, y), leaving a 2-tile
+## skin under tops and over bottoms (per column) so the mass isn't cut in two.
+func _worm(g: PackedByteArray, x: float, y: float, length: int, tops: PackedInt32Array, bottoms: PackedInt32Array) -> void:
+	var heading := 0.0 if rng.randf() < 0.5 else PI
+	var a := heading
+	for i in length:
+		for dy in range(-1, 2):
+			for dx in 2:
+				var tx := floori(x) + dx
+				var ty := floori(y) + dy
+				if tx > arena_left and tx < arena_right - 1 and ty >= tops[tx] + 2 and ty <= bottoms[tx] - 2:
+					g[ty * COLS + tx] = EMPTY
+		a = heading + clampf(a - heading + rng.randf_range(-0.35, 0.35), -0.6, 0.6)
+		x += cos(a)
+		y += sin(a) * 0.7
+
+
+## Towers: a pillar under every spawn slot (plus, for 2 players, sometimes a middle spire or two
+## short outer pillars), joined by 1-tile bridges.
+func _towers() -> PackedByteArray:
+	var g := _blank()
+	var width := rng.randi_range(7 if _players == 2 else 6, 8)
+	var pillars: Array[Vector3i] = []                # left column, right column, top row
+	for i in _players:
+		var l := _slot(i) - width / 2
+		pillars.append(Vector3i(l, l + width - 1, rng.randi_range(13, 18)))
+	if _players == 2:
+		var r := rng.randf()
+		if r < 0.33:
+			var mid := (arena_left + arena_right) / 2
+			pillars.append(Vector3i(mid - 1, mid + 1, rng.randi_range(18, 22)))
+		elif r < 0.66:
+			var top := rng.randi_range(18, 23)
+			pillars.append(Vector3i(arena_left + 2, arena_left + 5, top))
+			pillars.append(Vector3i(_mirror(arena_left + 5), _mirror(arena_left + 2), top))
+	pillars.sort_custom(func(a: Vector3i, b: Vector3i) -> bool: return a.x < b.x)
+	for p: Vector3i in pillars:
+		var jl := 0
+		var jr := 0
+		for y in range(p.z, ROWS - 2):
+			if (y - p.z) % 3 == 0:
+				jl = rng.randi_range(-1, 1) if y > p.z else 0
+				jr = rng.randi_range(-1, 1) if y > p.z else 0
+			var flare := 1 if y >= ROWS - 5 else 0
+			for x in range(p.x + jl - flare, p.y + jr + flare + 1):
+				if x > arena_left and x < arena_right - 1:
+					g[y * COLS + x] = DIRT
+	for k in pillars.size() - 1:
+		var a: Vector3i = pillars[k]
+		var b: Vector3i = pillars[k + 1]
+		var row := maxi(a.z, b.z) + rng.randi_range(1, 4)
+		var rows: Array[int] = [row]
+		if rng.randf() < 0.5:
+			rows.append(mini(ROWS - 6, row + rng.randi_range(4, 7)))
+		for y: int in rows:
+			for x in range(maxi(a.y - 1, arena_left + 1), mini(b.x + 2, arena_right - 1)):
+				g[y * COLS + x] = DIRT                   # overlaps the pillars a bit: their edges are jagged
+	_remove_specks(g, 6)
+	return g
+
+
+## Caves: a thick, mostly solid band with caves carved through it, and ceiling slabs hanging
+## between the spawn slots (spawns always have open sky).
+func _caves() -> PackedByteArray:
+	var g := _blank()
+	var bumps := _noise_field(3)
+	var holes := _noise_field(4)
+	var fine := _noise_field(2)
+	var top0 := rng.randf_range(15.0, 18.0)
+	var tops := PackedInt32Array()
+	tops.resize(COLS)
+	tops.fill(ROWS)
+	for x in range(arena_left + 1, arena_right - 1):
+		var top := roundi(top0 + (bumps[14 * COLS + mini(x, _mirror(x))] - 0.5) * 5.0)
+		tops[x] = top
+		for y in range(top, ROWS - 2):
+			var i := y * COLS + x
+			if y <= top + 1 or holes[i] * 0.75 + fine[i] * 0.25 < 0.58:
+				g[i] = DIRT
+	g = _smooth(g)
+	var row := rng.randi_range(Cfg.TOP_ROW + 1, Cfg.TOP_ROW + 3)
+	var x := arena_left + 2
+	while x < arena_right - 2:
+		if _near_slot(x, 3) or rng.randf() < 0.45:
+			x += rng.randi_range(1, 2)
+			continue
+		var length := rng.randi_range(3, 7)
+		for k in length:
+			var cx := x + k
+			if cx >= arena_right - 2 or _near_slot(cx, 3) or row + 6 > tops[cx]:
+				break
+			g[row * COLS + cx] = DIRT
+			g[(row + 1) * COLS + cx] = DIRT
+			if rng.randf() < 0.25:
+				g[(row + 2) * COLS + cx] = DIRT          # a little stalactite
+		x += length + rng.randi_range(2, 4)
 	_remove_specks(g, 6)
 	return g
 
@@ -401,3 +620,115 @@ func _area(s: Vector2i, radius: int) -> Array:
 		for x in range(maxi(0, s.x - radius), mini(COLS, s.x + radius + 1)):
 			out.append(y * COLS + x)
 	return out
+
+
+# --- biome dressing (after ores, so ore counts and spawn ground stay fair) -------------
+
+func _dress(g: PackedByteArray) -> void:
+	match biome:
+		"desert":
+			_add_sand(g)
+		"tundra":
+			_add_ice(g)
+		"mushroom":
+			_add_slime(g)
+		"volcano":
+			_add_lava(g)
+	_add_tnt(g)
+
+
+func _open_above(g: PackedByteArray, x: int, y: int) -> bool:
+	return y == 0 or g[(y - 1) * COLS + x] == EMPTY
+
+
+## The top 2 dirt tiles of each surface become sand; sand that would fall at once stays packed (dirt).
+func _add_sand(g: PackedByteArray) -> void:
+	for i in COLS * ROWS:
+		var y := i / COLS
+		if g[i] == DIRT and (_open_above(g, i % COLS, y) or _open_above(g, i % COLS, y - 1)):
+			g[i] = SAND
+	for i in COLS * ROWS:
+		if g[i] == SAND and (i / COLS == ROWS - 1 or g[i + COLS] == EMPTY):
+			g[i] = DIRT
+
+
+## Sheets of ice over patches of the surface.
+func _add_ice(g: PackedByteArray) -> void:
+	var patches := _noise_field(5)
+	for i in COLS * ROWS:
+		if g[i] == DIRT and _open_above(g, i % COLS, i / COLS) and patches[i] > 0.42:
+			g[i] = ICE
+
+
+## Surface tiles that may turn into something special: dirt or stone with air above, inside the
+## arena, more than `safe` tiles (a square) from every spawn and never in a spawn's column.
+func _surface_spots(g: PackedByteArray, safe: int) -> Array:
+	var out := []
+	for y in range(1, ROWS):
+		for x in range(arena_left + 1, arena_right - 1):
+			var t := g[y * COLS + x]
+			if (t == DIRT or t == STONE) and _open_above(g, x, y) and _far_from_spawns(x, y, safe):
+				out.append(Vector2i(x, y))
+	return out
+
+
+func _far_from_spawns(x: int, y: int, safe: int) -> bool:
+	for s: Vector2i in spawns:
+		if x == s.x or maxi(absi(x - s.x), absi(y - s.y)) <= safe:
+			return false
+	return true
+
+
+## Bouncy pads, 1-3 tiles wide, on the surface (not right at a spawn).
+func _add_slime(g: PackedByteArray) -> void:
+	var spots := _surface_spots(g, 1)
+	_shuffle(spots)
+	var pads := rng.randi_range(5, 9)
+	for s: Vector2i in spots:
+		if pads == 0:
+			break
+		if g[s.y * COLS + s.x] != DIRT:
+			continue
+		pads -= 1
+		var wide := rng.randi_range(1, 3)
+		for k in wide:
+			var x := s.x + k
+			if g[s.y * COLS + x] == DIRT and _open_above(g, x, s.y) and _far_from_spawns(x, s.y, 1):
+				g[s.y * COLS + x] = SLIME
+
+
+## Lava pools sunk into the surface, never near a spawn or under one.
+func _add_lava(g: PackedByteArray) -> void:
+	var spots := _surface_spots(g, Cfg.LAVA_SAFE)
+	_shuffle(spots)
+	var ok := {}
+	for s: Vector2i in spots:
+		ok[s] = true
+	var pools := rng.randi_range(3, 6)
+	for s: Vector2i in spots:
+		if pools == 0:
+			break
+		if g[s.y * COLS + s.x] == LAVA:
+			continue
+		pools -= 1
+		g[s.y * COLS + s.x] = LAVA
+		for dir: int in [-1, 1]:
+			for k in range(1, rng.randi_range(1, 3) + 1):
+				var p := Vector2i(s.x + dir * k, s.y)
+				if not ok.has(p):
+					break
+				g[p.y * COLS + p.x] = LAVA
+
+
+## A few TNT blocks hidden in the terrain, away from the spawns.
+func _add_tnt(g: PackedByteArray) -> void:
+	var spots := []
+	for y in ROWS:
+		for x in range(arena_left + 1, arena_right - 1):
+			var t := g[y * COLS + x]
+			if (t == DIRT or t == STONE) and _far_from_spawns(x, y, Cfg.TNT_SAFE):
+				spots.append(y * COLS + x)
+	_shuffle(spots)
+	for k in mini(rng.randi_range(1, 3), spots.size()):
+		var i: int = spots[k]
+		g[i] = TNT

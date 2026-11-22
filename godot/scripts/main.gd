@@ -15,12 +15,35 @@ const INK := Color(0.93, 0.94, 1.0)
 const DIM := Color(0.66, 0.68, 0.84)
 const PANEL := Color(0.08, 0.09, 0.18)
 const SLOT_BG := Color(0.13, 0.15, 0.28)
-const GRASS := Color(0.36, 0.76, 0.29)
-const GRASS_LIGHT := Color(0.55, 0.89, 0.44)
-const TILE_COLORS := {World.DIRT: Color(0.54, 0.35, 0.2), World.STONE: Color(0.43, 0.44, 0.53),
-	World.PLACED: Color(0.69, 0.52, 0.33), World.COPPER: Color(0.43, 0.44, 0.53), World.CRYSTAL: Color(0.43, 0.44, 0.53)}
+# Per biome: dirt and stone (ores sit in the stone colour), the layer on top of dirt ("grass":
+# grass, sand crust, snow, embers, mycelium), sky gradient top/middle/bottom, hills far/near, stars.
+const BIOME_LOOK := {
+	"meadow": {"dirt": Color(0.54, 0.35, 0.2), "stone": Color(0.43, 0.44, 0.53),
+		"grass": Color(0.36, 0.76, 0.29), "grass_light": Color(0.55, 0.89, 0.44),
+		"sky": [Color(0.16, 0.18, 0.42), Color(0.09, 0.1, 0.23), Color(0.03, 0.03, 0.06)],
+		"hills": [Color(0.085, 0.095, 0.24), Color(0.055, 0.06, 0.16)], "stars": 1.0},
+	"desert": {"dirt": Color(0.74, 0.52, 0.32), "stone": Color(0.6, 0.44, 0.36),
+		"grass": Color(0.9, 0.76, 0.48), "grass_light": Color(0.98, 0.88, 0.62),
+		"sky": [Color(0.34, 0.2, 0.36), Color(0.78, 0.42, 0.3), Color(0.3, 0.12, 0.1)],
+		"hills": [Color(0.44, 0.22, 0.2), Color(0.3, 0.14, 0.13)], "stars": 0.25},
+	"tundra": {"dirt": Color(0.42, 0.36, 0.36), "stone": Color(0.5, 0.56, 0.66),
+		"grass": Color(0.84, 0.9, 0.97), "grass_light": Color(0.98, 0.99, 1.0),
+		"sky": [Color(0.2, 0.3, 0.5), Color(0.11, 0.17, 0.3), Color(0.04, 0.06, 0.11)],
+		"hills": [Color(0.24, 0.31, 0.44), Color(0.16, 0.21, 0.32)], "stars": 0.8},
+	"volcano": {"dirt": Color(0.31, 0.25, 0.24), "stone": Color(0.25, 0.24, 0.28),
+		"grass": Color(0.42, 0.2, 0.15), "grass_light": Color(0.78, 0.33, 0.12),
+		"sky": [Color(0.36, 0.09, 0.07), Color(0.15, 0.04, 0.05), Color(0.05, 0.02, 0.02)],
+		"hills": [Color(0.2, 0.06, 0.06), Color(0.12, 0.04, 0.04)], "stars": 0.3},
+	"mushroom": {"dirt": Color(0.4, 0.3, 0.4), "stone": Color(0.4, 0.38, 0.52),
+		"grass": Color(0.6, 0.38, 0.78), "grass_light": Color(0.8, 0.6, 0.95),
+		"sky": [Color(0.25, 0.12, 0.38), Color(0.12, 0.06, 0.2), Color(0.04, 0.02, 0.07)],
+		"hills": [Color(0.2, 0.1, 0.3), Color(0.13, 0.06, 0.2)], "stars": 1.0},
+}
+# Tiles that look the same in every biome (dirt, stone and ores take the biome's colours).
+const TILE_COLORS := {World.PLACED: Color(0.69, 0.52, 0.33), World.SAND: Color(0.93, 0.79, 0.5),
+	World.ICE: Color(0.6, 0.84, 0.97), World.SLIME: Color(0.42, 0.88, 0.45), World.LAVA: Color(1.0, 0.42, 0.08),
+	World.TNT: Color(0.8, 0.16, 0.14)}
 const ORE_COLORS := {World.COPPER: Color(0.9, 0.55, 0.24), World.CRYSTAL: Color(0.35, 0.88, 0.94)}
-const HILL_COLORS := [Color(0.085, 0.095, 0.24), Color(0.055, 0.06, 0.16)]
 const PICK_HANDLE := Color(0.55, 0.38, 0.22)
 const PICK_HEAD := Color(0.78, 0.8, 0.88)
 # Mining cracks, in pixels inside a tile: each stage adds these segments (pairs of points).
@@ -43,6 +66,7 @@ const CRAFT_LABELS := {"p1_mouse": "F", "p2_keys": "H", "pad": "RB"}
 
 var sim := GameSim.new()
 var sfx: Sfx
+var music: Music                  # null on the dedicated server / headless
 var font: Font
 var world_root: Node2D
 var tiles: TileMapLayer
@@ -72,8 +96,10 @@ var lobby_size := 0
 var dedicated := false            # client: the host is a dedicated server
 var sent_version := -1
 var predictor := Prediction.Client.new()   # client: predicts my own player between snapshots
-var trails := {}                  # client: other players' index -> [[receive time, Vector2 pos], ...]
-const INTERP_DELAY := 0.1         # client: other players are drawn this far in the past, between snapshots
+var trails := {}                  # client: other players' index -> [[server tick, Vector2 pos], ...]
+const INTERP_TICKS := 6           # client: other players are drawn this many server ticks (100 ms) behind the newest snapshot
+var render_tick := -1.0           # client: the server tick other players are drawn at (-1: no snapshot yet)
+var newest_tick := -1             # client: tick of the newest snapshot
 
 # Test hooks (command line)
 var bot := false
@@ -94,6 +120,9 @@ func _ready() -> void:
 		_make_hills(hill_rng, HUD_H + Cfg.ROWS * CELL * 0.55, 32.0)]
 	sfx = Sfx.new()
 	add_child(sfx)
+	if not "--server" in OS.get_cmdline_user_args() and DisplayServer.get_name() != "headless":
+		music = Music.new()       # renders a slice per frame; nothing to hear on a dedicated server
+		add_child(music)
 	world_root = Node2D.new()
 	world_root.position = Vector2(0, HUD_H)
 	add_child(world_root)
@@ -146,8 +175,11 @@ func _arg(args: PackedStringArray, flag: String, fallback: String) -> String:
 
 # Atlas layout: one row per tile type; columns are (air mask * VARIANTS + noise variant).
 # The mask says which of the 4 neighbours are air, so edges can be shaded per tile.
-const TILE_TYPES := [World.DIRT, World.STONE, World.PLACED, World.COPPER, World.CRYSTAL]
+const TILE_TYPES := [World.DIRT, World.STONE, World.PLACED, World.COPPER, World.CRYSTAL,
+	World.SAND, World.ICE, World.SLIME, World.LAVA, World.TNT]
 const VARIANTS := 3
+# "TNT" in a 3x5 pixel font, one string per row.
+const TNT_LETTERS := ["### # # ###", " #  ###  # ", " #  ###  # ", " #  # #  # ", " #  # #  # "]
 const M_TOP := 1
 const M_RIGHT := 2
 const M_BOTTOM := 4
@@ -155,8 +187,21 @@ const M_LEFT := 8
 const SELF_AND_NEIGHBOURS := [Vector2i(0, 0), Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
 
 var atlas: ImageTexture
+var look: Dictionary = BIOME_LOOK["meadow"]   # the biome the atlas, sky and hills are drawn for
+var shown_biome := "meadow"
+var lava_cells := {}                          # Vector2i -> true, for the glow drawn over lava
 
 
+## This biome's base colour for a tile.
+func _tile_color(tile: int) -> Color:
+	if tile == World.DIRT:
+		return look["dirt"]
+	if tile == World.STONE or ORE_COLORS.has(tile):
+		return look["stone"]
+	return TILE_COLORS.get(tile, Color.WHITE)
+
+
+## The atlas for the current `look` (rebuilt when the biome changes).
 func _build_tileset() -> TileSet:
 	var img := Image.create_empty(CELL * VARIANTS * 16, CELL * TILE_TYPES.size(), false, Image.FORMAT_RGBA8)
 	var rng := RandomNumberGenerator.new()
@@ -186,9 +231,12 @@ func _build_tileset() -> TileSet:
 ## One tile's texture with no edge shading: a few shades of 2x2 noise plus per-type details.
 func _paint_base(tile: int, rng: RandomNumberGenerator) -> Image:
 	var img := Image.create_empty(CELL, CELL, false, Image.FORMAT_RGBA8)
-	var base: Color = TILE_COLORS[tile]
+	var base := _tile_color(tile)
 	if tile == World.PLACED:
 		_paint_planks(img, base, rng)
+		return img
+	if tile == World.TNT:
+		_paint_tnt(img, base)
 		return img
 	for cy in CELL / 2:
 		for cx in CELL / 2:
@@ -206,10 +254,40 @@ func _paint_base(tile: int, rng: RandomNumberGenerator) -> Image:
 		for i in 3:
 			var px := rng.randi_range(2, CELL - 5)
 			var py := rng.randi_range(3, CELL - 4)
-			img.fill_rect(Rect2i(px, py, 2, 2), Color(0.63, 0.53, 0.43))
-			img.set_pixel(px, py, Color(0.74, 0.65, 0.55))
+			img.fill_rect(Rect2i(px, py, 2, 2), base.lightened(0.3))
+			img.set_pixel(px, py, base.lightened(0.45))
 		for i in 2:
 			img.fill_rect(Rect2i(rng.randi_range(2, CELL - 6), rng.randi_range(3, CELL - 4), 3, 2), base.darkened(0.28))
+	elif tile == World.SAND:
+		# Wind ripples and a few dark grains.
+		for i in 3:
+			img.fill_rect(Rect2i(rng.randi_range(0, CELL - 8), 4 + i * 5 + rng.randi_range(0, 1), rng.randi_range(5, 8), 1), base.darkened(0.12))
+		for i in 5:
+			img.set_pixel(rng.randi_range(1, CELL - 2), rng.randi_range(1, CELL - 2), base.darkened(0.3))
+	elif tile == World.ICE:
+		# Diagonal shine streaks and trapped bubbles.
+		for i in 2:
+			var sx := rng.randi_range(2, CELL - 8)
+			var sy := rng.randi_range(6, CELL - 3)
+			for k in 6:
+				img.set_pixel(sx + k, sy - k, base.lightened(0.5))
+		for i in 2:
+			img.set_pixel(rng.randi_range(2, CELL - 3), rng.randi_range(2, CELL - 3), Color(1, 1, 1, 0.9))
+	elif tile == World.SLIME:
+		# Bubbles with a highlight.
+		for i in 3:
+			var bx := rng.randi_range(3, CELL - 6)
+			var by := rng.randi_range(4, CELL - 6)
+			img.fill_rect(Rect2i(bx, by, 3, 3), base.lightened(0.25))
+			img.set_pixel(bx, by, base.lightened(0.7))
+	elif tile == World.LAVA:
+		# Hot yellow blobs and dark cooling crust.
+		for i in 4:
+			var lx := rng.randi_range(1, CELL - 5)
+			var ly := rng.randi_range(2, CELL - 5)
+			img.fill_rect(Rect2i(lx, ly, rng.randi_range(2, 4), 2), Color(1.0, 0.85, 0.3))
+		for i in 2:
+			img.fill_rect(Rect2i(rng.randi_range(1, CELL - 5), rng.randi_range(4, CELL - 3), 3, 2), base.darkened(0.45))
 	else:
 		# Stone: flat lighter patches and short dark crevices.
 		for i in 2:
@@ -247,16 +325,37 @@ func _paint_planks(img: Image, base: Color, rng: RandomNumberGenerator) -> void:
 	img.fill_rect(Rect2i(CELL - 1, 0, 1, CELL), edge)
 
 
+## TNT: red sticks with dark seams and a white "TNT" label band.
+func _paint_tnt(img: Image, base: Color) -> void:
+	img.fill(base)
+	for sx: int in [4, 9, 14]:
+		img.fill_rect(Rect2i(sx, 0, 1, CELL), base.darkened(0.35))
+	img.fill_rect(Rect2i(0, 0, CELL, 2), base.lightened(0.2))
+	img.fill_rect(Rect2i(0, 6, CELL, 8), Color(0.95, 0.92, 0.86))
+	var ink := Color(0.12, 0.08, 0.08)
+	for row in TNT_LETTERS.size():
+		var line: String = TNT_LETTERS[row]
+		for col in line.length():
+			if line[col] == "#":
+				img.set_pixel(4 + col, 7 + row, ink)
+
+
 ## Shading where the tile touches air: lit top (grass on dirt), dark bottom, darker sides,
 ## and the corners rounded off where two open sides meet.
 func _paint_edges(img: Image, ox: int, oy: int, tile: int, mask: int, rng: RandomNumberGenerator) -> void:
 	if mask & M_TOP:
 		if tile == World.DIRT:
+			var grass: Color = look["grass"]
+			var light: Color = look["grass_light"]
 			for x in CELL:
 				var depth := rng.randi_range(4, 6)
 				for y in depth:
-					var g := GRASS_LIGHT if y < 2 else (GRASS.darkened(0.25) if y == depth - 1 else GRASS)
+					var g := light if y < 2 else (grass.darkened(0.25) if y == depth - 1 else grass)
 					img.set_pixel(ox + x, oy + y, g)
+		elif tile == World.ICE:
+			img.fill_rect(Rect2i(ox, oy, CELL, 2), Color(0.95, 0.98, 1.0))   # frost on top
+		elif tile == World.LAVA:
+			img.fill_rect(Rect2i(ox, oy, CELL, 2), Color(1.0, 0.9, 0.45))    # glowing surface
 		else:
 			_shade(img, Rect2i(ox, oy, CELL, 1), 0.22)
 			_shade(img, Rect2i(ox, oy + 1, CELL, 1), 0.1)
@@ -321,14 +420,25 @@ func _set_cell(x: int, y: int) -> void:
 		tiles.erase_cell(cell)                     # warned tiles are drawn shaking by the overlay
 	else:
 		tiles.set_cell(cell, 0, coords)
+	if sim.world.get_tile(x, y) == World.LAVA:
+		lava_cells[cell] = true
+	else:
+		lava_cells.erase(cell)
 
 
 ## Only redraw tiles that changed, plus their 4 neighbours (whose edges depend on them).
+## A new biome repaints the atlas first.
 func _refresh_tiles() -> void:
 	var w := sim.world
+	if w.biome != shown_biome:
+		shown_biome = w.biome
+		look = BIOME_LOOK.get(w.biome, BIOME_LOOK["meadow"])
+		tiles.tile_set = _build_tileset()
+		shown_version = -1
 	if w.version != shown_version:
 		shown_version = w.version
 		tiles.clear()
+		lava_cells.clear()
 		for y in Cfg.ROWS:
 			for x in Cfg.COLS:
 				_set_cell(x, y)
@@ -347,8 +457,8 @@ func _read_keys(layout: String) -> Dictionary:
 	for action in keys:
 		d[action] = keys[action].any(func(k): return Input.is_physical_key_pressed(k))
 	if layout == "p1_mouse":
-		var m := get_global_mouse_position()
-		d["mouse"] = Vector2(m.x / CELL, (m.y - HUD_H) / CELL)
+		# Tile space, as the map is drawn: world_root's HUD offset AND its screen-shake offset.
+		d["mouse"] = world_root.get_local_mouse_position() / CELL
 		d["mine"] = Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
 		d["place"] = Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)
 		d["wheel"] = wheel
@@ -410,10 +520,29 @@ func _remote_input(peer_id: int) -> Dictionary:
 func _bot_input() -> Dictionary:
 	# Test client: walk right for a second, dig straight down while standing still (the block under
 	# your feet is always solid, so the map always changes), walk left, jump now and then.
+	# Two 4 s stretches out of every three it chases the nearest player instead, aiming at them like
+	# a mouse, so bots fight.
 	var t := sim.tick % 240
 	var still := (t >= 60 and t < 120) or t >= 180
-	return {"right": t < 60, "left": t >= 120 and t < 180, "jump": t % 50 == 0, "mine": true,
+	var d := {"right": t < 60, "left": t >= 120 and t < 180, "jump": t % 50 == 0, "mine": true,
 		"up": false, "down": still, "place": false, "item1": false, "item2": false, "item3": false, "craft": false}
+	var me := _my_player()
+	if me == null or not me.alive or (sim.tick / 240) % 3 == 0:
+		return d
+	var foe: Player = null
+	for p: Player in sim.players:
+		if p != me and p.alive and (foe == null or _draw_centre(p).distance_to(me.centre()) < _draw_centre(foe).distance_to(me.centre())):
+			foe = p
+	if foe == null:
+		return d
+	var rel := _draw_centre(foe) - me.centre()
+	d["right"] = rel.x > 0.6
+	d["left"] = rel.x < -0.6
+	d["down"] = false
+	d["jump"] = ((rel.y < -1.0 or absf(rel.x) > 1.5) and t % 20 == 0) or t % 50 == 0
+	d["mine"] = rel.length() < 2.5                # swing when close, don't dig on the way
+	d["mouse"] = _draw_centre(foe)
+	return d
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -427,6 +556,10 @@ func _unhandled_input(event: InputEvent) -> void:
 	var key: int = event.physical_keycode
 	if key == KEY_M:
 		sfx.muted = not sfx.muted
+		if music:
+			music.set_muted(sfx.muted)
+	elif key == KEY_N and music:
+		music.enabled = not music.enabled
 	match screen:
 		"title":
 			if key == KEY_ENTER or key == KEY_KP_ENTER:
@@ -485,6 +618,7 @@ func start_local(count: int) -> void:
 	match_size = count
 	mode = "local"
 	sim.world.record = false
+	sim.freeze_on_hit = true                     # hitstop is fine when nobody is predicting
 	sim.start_match(count)
 	screen = "game"
 
@@ -524,6 +658,9 @@ func join_game(address: String) -> void:
 	screen = "lobby"
 	predictor = Prediction.Client.new()
 	trails = {}
+	render_tick = -1.0
+	newest_tick = -1
+	sim.freeze_on_hit = false
 	notice = "Connecting to %s ..." % url
 	lobby_size = 0
 	address_edit.visible = false
@@ -556,6 +693,8 @@ func leave_online(msg: String) -> void:
 	remote = {}
 	predictor = Prediction.Client.new()
 	trails = {}
+	render_tick = -1.0
+	newest_tick = -1
 	lag_out.clear()
 	lag_in.clear()
 	sim = GameSim.new()
@@ -602,6 +741,8 @@ func _on_peer_disconnected(id: int) -> void:
 		sim.players[peer_index[id]].alive = false   # left mid-match: counts as out
 	peer_index.erase(id)
 	if mode == "server" and lobby_peers.is_empty() and screen != "lobby":
+		if print_hash:
+			print("DEALT %s" % str(sim.players.map(func(p: Player) -> int: return int(p.dealt))))
 		_back_to_lobby()                       # everyone left: a dedicated server starts over
 	if screen == "lobby":
 		_send_lobby()
@@ -653,6 +794,7 @@ func start_online_match() -> void:
 	for k in lobby_peers.size():
 		peer_index[lobby_peers[k]] = k + _offset()
 	sim.world.record = true
+	sim.freeze_on_hit = false                    # online the sim never stops (clients predict through hits)
 	sim.start_match(total)
 	sent_version = -1
 	screen = "game"
@@ -735,28 +877,40 @@ func _on_snap(d: Dictionary) -> void:
 		print("HASH %d %s" % [sim.tick, sim.world.grid.hex_encode().md5_text()])
 
 
-## Client: remember where the other players were at each snapshot, to draw them between snapshots.
+## Client: remember where the other players were at each snapshot's server tick, to draw them
+## between snapshots (by tick, not by arrival time, so network jitter doesn't show).
 func _record_trails() -> void:
-	var now := _now()
+	newest_tick = sim.tick
+	if render_tick < 0.0 or absf(newest_tick - INTERP_TICKS - render_tick) > 30.0:
+		render_tick = float(newest_tick - INTERP_TICKS)
 	for p: Player in sim.players:
 		if p.index == my_index:
 			continue
 		var pos := Vector2(p.x, p.y)
 		var tr: Array = trails.get(p.index, [])
-		if tr and (tr[-1][1] as Vector2).distance_to(pos) > 3.0:
-			tr.clear()                               # respawned: don't slide across the map
-		tr.append([now, pos])
-		while tr.size() > 2 and tr[1][0] < now - 0.5:
+		if tr and (int(tr[-1][0]) >= sim.tick or (tr[-1][1] as Vector2).distance_to(pos) > 3.0):
+			tr.clear()                               # respawned (or a new server): don't slide across the map
+		tr.append([sim.tick, pos])
+		while tr.size() > 2 and float(tr[1][0]) < render_tick - 30.0:
 			tr.pop_front()
 		trails[p.index] = tr
 
 
-func _now() -> float:
-	return Time.get_ticks_usec() / 1000000.0
+## Client: the render tick runs at 60/s and is steered gently (a few % faster or slower) toward
+## INTERP_TICKS behind the newest snapshot; more than 30 ticks off (a stall) it jumps there.
+func _advance_render_tick(delta: float) -> void:
+	if newest_tick < 0 or render_tick < 0.0:
+		return
+	var off := float(newest_tick - INTERP_TICKS) - render_tick
+	if absf(off) > 30.0:
+		render_tick = float(newest_tick - INTERP_TICKS)
+	else:
+		render_tick += delta * 60.0 * (1.0 + clampf(off * 0.02, -0.05, 0.05))
 
 
 ## Where to draw a player (top-left, in tiles). Client: my own player is predicted, plus the easing
-## left from the last correction; others are interpolated INTERP_DELAY behind. Otherwise: as simulated.
+## left from the last correction; others are lerped between snapshots at render_tick (INTERP_TICKS
+## behind the newest). Otherwise: as simulated.
 func draw_pos(p: Player) -> Vector2:
 	if mode != "client":
 		return Vector2(p.x, p.y)
@@ -765,15 +919,14 @@ func draw_pos(p: Player) -> Vector2:
 	var tr: Array = trails.get(p.index, [])
 	if tr.is_empty():
 		return Vector2(p.x, p.y)
-	var t := _now() - INTERP_DELAY
-	if t <= tr[0][0]:
+	if render_tick <= float(tr[0][0]):
 		return tr[0][1]
 	for i in range(1, tr.size()):
 		var b: Array = tr[i]
-		if t <= b[0]:
+		if render_tick <= float(b[0]):
 			var a: Array = tr[i - 1]
-			var span: float = b[0] - a[0]
-			var k: float = 0.0 if span <= 0.0 else (t - a[0]) / span
+			var span := float(b[0]) - float(a[0])
+			var k := 0.0 if span <= 0.0 else (render_tick - float(a[0])) / span
 			return (a[1] as Vector2).lerp(b[1], k)
 	return tr[-1][1]
 
@@ -809,16 +962,20 @@ func _send_input(sent: Dictionary) -> void:
 
 func _physics_process(_delta: float) -> void:
 	if quit_after > 0 and time > quit_after:
+		if print_hash and mode == "client":
+			print("CORR %d corrections > 0.5 tiles, %d snapped (not eased), biggest %.2f"
+				% [predictor.corrections, predictor.snaps, predictor.worst])
 		get_tree().quit()
 	if mode == "client":
 		_flush_lag()
 		if screen == "game" and sim.state in ["intro", "play", "outro"] and peer \
 				and peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
 			var input := _my_input()
+			input["view"] = render_tick              # where I'm seeing the others: the host rewinds my swings to it
 			_send_input(predictor.record(input))
 			var me := _my_player()
 			# Move my own player now instead of waiting a round trip (the host freezes everyone
-			# between rounds and during hitstop, so don't predict then either).
+			# between rounds, so don't predict then either; online there's no hitstop).
 			if me and me.alive and sim.state in ["play", "outro"] and sim.hitstop <= 0:
 				predictor.predict(me, sim.world, input)
 		for pos in sim.world.warnings:           # tick warnings for the shake effect only
@@ -851,13 +1008,19 @@ func _physics_process(_delta: float) -> void:
 
 func _process(delta: float) -> void:
 	time += delta
+	if music:
+		music.play("battle" if screen == "game" else "menu")
+		var w := sim.world   # intensity = how far the zone has closed in
+		music.set_intensity(1.0 - (w.zone_right - w.zone_left) / maxf(1.0, w.arena_right - w.arena_left) if screen == "game" else 0.0)
+	if mode == "client":
+		_advance_render_tick(delta)
 	if screen == "game" and not (mode == "server"):
 		_refresh_tiles()
 		_drain_debris()
 		_update_juice(delta)
 		var me := _my_player()
 		if mode == "client" and me:
-			me.smooth *= exp(-delta * 15.0)          # ease out the last prediction correction
+			me.smooth *= exp(-delta * 20.0)          # ease out the last prediction correction
 		for p in particles:
 			p[0] += p[1] * delta
 			p[1].y += p[5] * delta
@@ -900,7 +1063,7 @@ func _burst(pos: Vector2, color: Color, count: int, speed: float, life: float, s
 func _drain_debris() -> void:
 	var crumbled := false
 	for b in sim.world.broken:
-		var color: Color = ORE_COLORS.get(b[2], TILE_COLORS.get(b[2], Color.WHITE))
+		var color: Color = ORE_COLORS.get(b[2], _tile_color(b[2]))
 		for i in 5:
 			particles.append([Vector2(b[0] + randf_range(0.2, 0.8), b[1] + randf_range(0.2, 0.8)),
 				Vector2(randf_range(-3, 3), randf_range(-7, -2)), randf_range(0.3, 0.6), color, [3, 4, 5].pick_random(), 30.0])
@@ -948,20 +1111,27 @@ func _on_screen(v: Vector2) -> bool:
 # --- drawing --------------------------------------------------------------------------
 
 func _draw() -> void:
-	# Night sky behind everything.
+	# Sky behind everything, in this round's biome colours (the menus use the meadow night).
+	var lk: Dictionary = look if screen == "game" else BIOME_LOOK["meadow"]
+	var sky: Array = lk["sky"]
+	var top: Color = sky[0]
+	var mid: Color = sky[1]
+	var low: Color = sky[2]
 	var steps := 24
 	for i in steps:
 		var t := float(i) / steps
-		var c := Color(0.16, 0.18, 0.42).lerp(Color(0.09, 0.1, 0.23), t / 0.7) if t < 0.7 else Color(0.09, 0.1, 0.23).lerp(Color(0.03, 0.03, 0.06), (t - 0.7) / 0.3)
+		var c := top.lerp(mid, t / 0.7) if t < 0.7 else mid.lerp(low, (t - 0.7) / 0.3)
 		draw_rect(Rect2(0, HEIGHT * t, WIDTH, HEIGHT / float(steps) + 1), c)
 	var r := RandomNumberGenerator.new()
 	r.seed = 7
+	var stars: float = lk["stars"]
 	for i in 90:
 		var shade := r.randf_range(0.35, 0.86)
-		draw_rect(Rect2(r.randi_range(0, WIDTH), HUD_H + r.randi_range(0, Cfg.ROWS * CELL / 3), 2, 2), Color(shade, shade, shade))
+		draw_rect(Rect2(r.randi_range(0, WIDTH), HUD_H + r.randi_range(0, Cfg.ROWS * CELL / 3), 2, 2), Color(shade, shade, shade, stars))
 	# Distant hills, far layer first.
+	var hill_colors: Array = lk["hills"]
 	for i in hills.size():
-		draw_colored_polygon(hills[i], HILL_COLORS[i])
+		draw_colored_polygon(hills[i], hill_colors[i])
 
 
 ## A hill silhouette: a few summed sine waves along the top, closed off at the screen bottom.
@@ -991,6 +1161,11 @@ func _draw_overlay() -> void:
 	if screen != "game":
 		return
 	var w := sim.world
+	# Lava glows and flickers.
+	for pos: Vector2i in lava_cells:
+		var glow := 0.18 + 0.1 * sin(time * 4.0 + pos.x * 1.7)
+		overlay.draw_rect(Rect2(pos.x * CELL - 3, pos.y * CELL - 5, CELL + 6, CELL + 5), Color(1.0, 0.5, 0.1, glow * 0.5))
+		overlay.draw_rect(Rect2(pos.x * CELL, pos.y * CELL, CELL, 3), Color(1.0, 0.9, 0.4, glow))
 	# Warned tiles shake and flash before they break.
 	for pos in w.warnings:
 		var coords := _tile_coords(pos.x, pos.y)
@@ -1073,7 +1248,9 @@ func damage_color(d: float) -> Color:
 
 func _draw_player(p: Player) -> void:
 	var at := draw_pos(p)
-	var t := _target_at(p, at)
+	# My own target comes from my true (predicted) position, as the host will compute it, not from
+	# the eased drawn one; the others' follow where they're drawn.
+	var t := p.target(sim.world, false) if p == _my_player() else _target_at(p, at)
 	if sim.world.solid(t.x, t.y) or p.blocks() > 0:
 		overlay.draw_rect(Rect2(t.x * CELL, t.y * CELL, CELL, CELL), p.color, false, 2.0)
 	var pos := at * CELL
@@ -1081,7 +1258,7 @@ func _draw_player(p: Player) -> void:
 	_draw_character(p, at)
 	if p.swing_t > 0:
 		var c := _draw_centre(p) * CELL
-		var a := Vector2(p.aim).angle()
+		var a := p.aim_vec.angle()                # the swing box follows the exact aim
 		var alpha := clampf(p.swing_t / 0.12, 0.0, 1.0)
 		var r := 1.3 * CELL
 		overlay.draw_arc(c, r, a - 0.9, a + 0.9, 16, Color(Color.WHITE, alpha), 4.0)
@@ -1133,7 +1310,7 @@ func _draw_character(p: Player, at: Vector2) -> void:
 		angle = clampf(p.vel_x * 0.03, -0.6, 0.6) + sin(time * 30.0) * 0.12 * clampf(p.stun * 3.0, 0.0, 1.0)
 	elif running:
 		angle = clampf(p.vel_x * 0.012, -0.1, 0.1)
-	var grow := 1.18 if sim.hitstop > 0 and p.hurt_t > 0 else 1.0
+	var grow := 1.18 if sim.impact() and p.hurt_t > 0 else 1.0
 	# Rotate about the middle of the body, scale from the feet.
 	var centre := Vector2(at.x * CELL + w / 2.0, at.y * CELL + h / 2.0)
 	overlay.draw_set_transform(centre + Vector2(0, h / 2.0).rotated(angle), angle, Vector2(sx, sy) * grow)
@@ -1289,11 +1466,11 @@ func _draw_game_hud() -> void:
 		for d in [Vector2.RIGHT, Vector2.LEFT, Vector2.UP, Vector2.DOWN]:
 			hud.draw_line(m + d * 4, m + d * 12, me.color, 2.0)
 
-	if sim.hitstop > 0:
+	if sim.impact():
 		hud.draw_rect(Rect2(0, 0, WIDTH, HEIGHT), Color(1, 1, 1, 0.08))
 
 	match sim.state:
-		"intro": _banner("Round %d" % sim.round_no, "Hit players to raise their %. Higher % = they fly farther. Knock them out!")
+		"intro": _banner("Round %d - %s %s" % [sim.round_no, sim.world.biome.capitalize(), sim.world.shape.capitalize()], "Hit players to raise their %. Higher % = they fly farther. Knock them out!")
 		"outro": _banner(sim.message, "   ".join(sim.players.map(func(p): return "P%d: %d" % [p.index + 1, p.wins])) + "   (first to %d)" % Cfg.ROUNDS_TO_WIN)
 		"match_over":
 			var sub := "Enter = rematch    Esc = menu"
@@ -1381,7 +1558,7 @@ func _draw_title() -> void:
 		"Q/E/R items   F craft   the mouse picks the block within reach",
 		"Local P2:  J/L move   I jump   K aim down   hold U: mine / hit   O place   7/8/9 items   H craft",
 		"Controller:  stick move   A jump   right stick aim   hold RT: mine / hit   LT place   X/Y/B items   RB craft",
-		"Craft: one press makes the best item you can afford (shown on your HUD).   M = mute",
+		"Craft: one press makes the best item you can afford (shown on your HUD).   M = mute   N = music",
 	]
 	for i in lines.size():
 		text(hud, lines[i], Vector2(cx, 292 + i * 24), 15, DIM, true)

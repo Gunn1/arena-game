@@ -19,12 +19,24 @@ var tick := 0
 var round_time := 0.0             # seconds since this round's "go" (for KO credit)
 var feed: Array = []              # [text, ttl] kill feed lines
 var hitstop := 0.0                # > 0: the whole game is frozen for a moment after a hit
+# Online the sim must never freeze: clients predict through it and queued inputs would be lost.
+# With freeze_on_hit off, a hit sets hit_flash instead: the same impact look, nothing stops.
+var freeze_on_hit := true
+var hit_flash := 0.0              # > 0: draw the impact (hit player enlarged, white flash); decays
 var rng := RandomNumberGenerator.new()
+# Lag compensation (host): where everyone was over the last REWIND_KEEP ticks, so a remote
+# player's swing is tested against what they saw. view = the tick the input being applied was
+# drawn at (-1: no rewind, e.g. local players and the host's own).
+const REWIND_KEEP := 60
+const REWIND_MAX := 18            # never rewind more than 300 ms
+var past: Array = []              # [tick, [Vector2 top-left per player]], oldest first
+var view := -1.0
 var acks: Array = []              # host: per player, seq of the last input applied (sent in snapshots)
 
 
 func _init() -> void:
 	rng.randomize()
+	world.occupied = player_in_tile               # falling sand stops above players
 
 
 func sound(name: String, min_gap := 0.0) -> void:
@@ -48,6 +60,7 @@ func start_match(count: int) -> void:
 	round_no = 0
 	feed.clear()
 	hitstop = 0.0
+	hit_flash = 0.0
 	new_round()
 
 
@@ -59,6 +72,7 @@ func new_round() -> void:
 	projectiles.clear()
 	bombs.clear()
 	beams.clear()
+	past.clear()                                 # everyone respawned: no rewinding into last round
 	round_time = 0.0
 	state = "intro"
 	timer = Cfg.ROUND_INTRO
@@ -87,6 +101,7 @@ func update(dt: float, inputs: Array) -> void:
 	for line in feed:
 		line[1] -= dt
 	feed = feed.filter(func(line): return line[1] > 0)
+	hit_flash = maxf(0.0, hit_flash - dt)
 	if hitstop > 0:
 		hitstop -= dt
 		return
@@ -104,11 +119,17 @@ func update(dt: float, inputs: Array) -> void:
 	for i in players.size():
 		var p: Player = players[i]
 		if p.alive:
-			p.update(dt, inputs[i] if i < inputs.size() else {}, self)
+			var inp: Dictionary = inputs[i] if i < inputs.size() else {}
+			view = float(inp.get("view", -1.0))
+			world.actor = i                          # TNT this player sets off is theirs
+			p.update(dt, inp, self)
+			view = -1.0
 			if not p.alive:
 				_on_death(p)
+	_log_positions()
 	_update_projectiles(dt)
 	_update_bombs(dt)
+	_light_tnt()
 	for b in beams:
 		b["time"] -= dt
 	beams = beams.filter(func(b): return b["time"] > 0)
@@ -155,15 +176,42 @@ func player_in_tile(tx: int, ty: int) -> bool:
 
 # --- fighting ------------------------------------------------------------------------
 
-## Alive players (not p) inside the swing box in front of p's aim.
+## Alive players (not p) inside the swing box in front of p, along the exact (unsnapped) aim.
+## While a remote player's input is applied (view >= 0), the others are where that player saw them.
 func swing_targets(p: Player) -> Array:
-	var c := p.centre() + Vector2(p.aim).normalized() * Cfg.SWING_REACH
+	var c := p.centre() + p.aim_vec * Cfg.SWING_REACH
 	var box := Rect2(c - Cfg.SWING_BOX / 2.0, Cfg.SWING_BOX)
 	var out := []
 	for o: Player in players:
-		if o.alive and o != p and box.intersects(Rect2(Vector2(o.x, o.y), Vector2(Cfg.PLAYER_W, Cfg.PLAYER_H))):
+		var at := Vector2(o.x, o.y) if view < 0.0 else pos_at(o.index, view)
+		if o.alive and o != p and box.intersects(Rect2(at, Vector2(Cfg.PLAYER_W, Cfg.PLAYER_H))):
 			out.append(o)
 	return out
+
+
+## Host: remember where everyone is this tick, for rewinding remote swings.
+func _log_positions() -> void:
+	past.append([tick, players.map(func(o: Player) -> Vector2: return Vector2(o.x, o.y))])
+	if past.size() > REWIND_KEEP:
+		past = past.slice(past.size() - REWIND_KEEP)
+
+
+## Player i's top-left at tick `at` (fractions blend neighbouring ticks), clamped to what's
+## remembered and to REWIND_MAX ticks back. Newer than the last log: where they are now.
+func pos_at(i: int, at: float) -> Vector2:
+	var now := Vector2(players[i].x, players[i].y)
+	at = clampf(at, tick - REWIND_MAX, tick)
+	if past.is_empty() or at >= float(past[-1][0]):
+		return now
+	if at <= float(past[0][0]):
+		return past[0][1][i]
+	for k in range(past.size() - 1, 0, -1):
+		var a: Array = past[k - 1]
+		if float(a[0]) <= at:
+			var b: Array = past[k]
+			var span := float(b[0]) - float(a[0])
+			return (a[1][i] as Vector2).lerp(b[1][i], 0.0 if span <= 0.0 else (at - float(a[0])) / span)
+	return now
 
 
 ## Launch direction for a swing aimed at `aim`: down spikes, sideways hits lift a bit.
@@ -201,8 +249,17 @@ func hit_player(target: Player, attacker: Player, dir: Vector2, dmg: float, base
 	var col: Color = attacker.color if attacker != null else Color.WHITE
 	burst(target.centre(), col, clampi(int(knock), 6, 30), 6.0 + knock * 0.3, 0.4, 4)
 	shake = maxf(shake, clampf(knock / 100.0, 0.06, 0.3))
-	hitstop = maxf(hitstop, minf(Cfg.HITSTOP_MAX, Cfg.HITSTOP_BASE + knock * Cfg.HITSTOP_PER_KNOCK))
+	var impact_time := minf(Cfg.HITSTOP_MAX, Cfg.HITSTOP_BASE + knock * Cfg.HITSTOP_PER_KNOCK)
+	if freeze_on_hit:
+		hitstop = maxf(hitstop, impact_time)
+	else:
+		hit_flash = maxf(hit_flash, impact_time)
 	sound("hit_heavy" if knock >= 20 else "hit")
+
+
+## Draw the hit impact now (enlarged hit player, white flash): during hitstop, or hit_flash online.
+func impact() -> bool:
+	return hitstop > 0.0 or hit_flash > 0.0
 
 
 # --- items ---------------------------------------------------------------------------
@@ -306,9 +363,19 @@ func _update_bombs(dt: float) -> void:
 	bombs = keep
 
 
+## TNT that was mined, blasted or crumbled becomes a bomb stuck in place with a short fuse,
+## credited to whoever set it off (owner -1: nobody, e.g. the zone).
+func _light_tnt() -> void:
+	for l: Array in world.lit:
+		bombs.append({"x": l[0] + 0.5, "y": l[1] + 0.5, "vx": 0.0, "vy": 0.0, "fuse": Cfg.TNT_FUSE, "owner": l[2]})
+		sound("push")
+	world.lit.clear()
+
+
 func _explode(b: Dictionary) -> void:
 	var at := Vector2(b["x"], b["y"])
 	var r := ceili(Cfg.BOMB_RADIUS)
+	world.actor = b["owner"]                     # TNT caught in the blast goes off for the same player
 	for ty in range(floori(at.y) - r, floori(at.y) + r + 1):
 		for tx in range(floori(at.x) - r, floori(at.x) + r + 1):
 			if Vector2(tx + 0.5, ty + 0.5).distance_to(at) <= Cfg.BOMB_RADIUS:
@@ -320,7 +387,7 @@ func _explode(b: Dictionary) -> void:
 		if d < Cfg.BOMB_BLAST:
 			var f := 1.0 - d / Cfg.BOMB_BLAST
 			var dir := (p.centre() - at) / d if d > 0.01 else Vector2(0, -1)
-			var owner: Player = players[b["owner"]]
+			var owner: Player = players[b["owner"]] if int(b["owner"]) >= 0 else null
 			hit_player(p, owner, dir, Cfg.BOMB_DAMAGE * f, Cfg.BOMB_KNOCK * f)
 	burst(at, Color(1.0, 0.78, 0.31), 30, 14.0, 0.6, 5)
 	burst(at, Color.WHITE, 12, 8.0, 0.3, 3)
@@ -344,8 +411,8 @@ func snapshot(ack_list: Array = []) -> Dictionary:
 			p.slots.map(func(s): return null if s == null else [s["item"], s["charges"]]),
 			p.item_cd, p.wins, p.grapple,
 			p.damage, p.swing_t, p.hurt_t, p.kos, p.falls, p.dealt, p.stun,
-			p.vel_x, p.vy, p.on_ground, p.mine_target, p.mine_progress, p.mouse, p.land_t])
-	return {"tick": tick, "st": state, "tm": timer, "rd": round_no, "msg": message, "sh": shake, "hs": hitstop,
+			p.vel_x, p.vy, p.on_ground, p.mine_target, p.mine_progress, p.mouse, p.land_t, p.aim_vec])
+	return {"tick": tick, "st": state, "tm": timer, "rd": round_no, "msg": message, "sh": shake, "hs": hitstop, "hf": hit_flash,
 		"p": ps, "ch": world.changes.duplicate(), "pr": projectiles.map(func(x): return [x["x"], x["y"], x["owner"]]),
 		"bo": bombs.map(func(x): return [x["x"], x["y"], x["fuse"], x["owner"]]),
 		"be": beams.map(func(x): return [x["from"], x["to"], x["owner"], x["time"]]),
@@ -356,7 +423,7 @@ func snapshot(ack_list: Array = []) -> Dictionary:
 
 func grid_message() -> Dictionary:
 	return {"g": world.grid, "v": world.version, "wa": world.warnings.duplicate(),
-		"al": world.arena_left, "ar": world.arena_right}
+		"al": world.arena_left, "ar": world.arena_right, "bi": world.biome, "sp": world.shape}
 
 
 func apply_grid(d: Dictionary) -> void:
@@ -364,6 +431,9 @@ func apply_grid(d: Dictionary) -> void:
 	world.warnings = d["wa"]
 	world.arena_left = d["al"]
 	world.arena_right = d["ar"]
+	world.biome = d.get("bi", "meadow")
+	world.shape = d.get("sp", "islands")
+	world.lit.clear()                            # only the host lights TNT
 	world.broken.clear()
 	world.dirty.clear()
 	world.version += 1
@@ -384,6 +454,7 @@ func apply_snapshot(d: Dictionary, skip_index := -1) -> Array:
 	message = d["msg"]
 	shake = d["sh"]                              # the host fades shake out; copy it (max() here never decayed)
 	hitstop = d["hs"]
+	hit_flash = d["hf"]
 	round_time = d["rt"]
 	feed = d["fd"]
 	world.zone_left = d["zl"]
@@ -395,7 +466,7 @@ func apply_snapshot(d: Dictionary, skip_index := -1) -> Array:
 		var s: Array = ps[i]
 		if i != skip_index:
 			p.x = s[0]; p.y = s[1]; p.facing = s[2]; p.aim = s[3]
-			p.vel_x = s[19]; p.vy = s[20]; p.on_ground = s[21]; p.land_t = s[25]
+			p.vel_x = s[19]; p.vy = s[20]; p.on_ground = s[21]; p.land_t = s[25]; p.aim_vec = s[26]
 		p.alive = s[4]; p.craft_t = s[5]
 		p.last_crafted = s[6]; p.inv = s[7]; p.item_cd = s[9]; p.wins = s[10]; p.grapple = s[11]
 		p.damage = s[12]; p.swing_t = s[13]; p.hurt_t = s[14]; p.kos = s[15]; p.falls = s[16]
