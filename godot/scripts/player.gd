@@ -407,7 +407,10 @@ func _move_body(dt: float, dx: int, inp: Dictionary, game) -> void:
 
 	# Walking speed eases toward the input instead of snapping to it (slowly both ways on ice).
 	var grip := _grip(world) if on_ground else 1.0
-	if stun > 0 or (wall_lock > 0 and dx == last_wall):   # just after a wall jump you can't walk back into it
+	if stun > 0:
+		# Flying from a hit: a little steering, so a launch isn't a total loss of control.
+		walk_v = move_toward(walk_v, dx * Cfg.MOVE_SPEED * 0.5, Cfg.ACCEL_AIR * Cfg.STUN_DRIFT * dt)
+	elif wall_lock > 0 and dx == last_wall:   # just after a wall jump you can't walk back into it
 		walk_v = move_toward(walk_v, 0.0, Cfg.ACCEL_AIR * 0.5 * dt)
 	elif dx != 0:
 		walk_v = move_toward(walk_v, dx * Cfg.MOVE_SPEED, (Cfg.ACCEL_GROUND * grip if on_ground else Cfg.ACCEL_AIR) * dt)
@@ -488,12 +491,13 @@ func _use_hands(dt: float, inp: Dictionary, game) -> void:
 			if slot["charges"] <= 0:
 				slots[i] = null
 
-	# One button: swing at a player in front of you, or hold to mine the block you're aiming at.
+	# One button. A press always swings (a hit, or a visible miss); holding mines the block you
+	# aim at, swinging again whenever someone is in front of you. No swinging while stunned.
 	if inp.get("mine", false):
 		var swung := false
-		if swing_cd == 0.0:
+		if swing_cd == 0.0 and stun == 0.0:
 			var victims: Array = game.swing_targets(self)
-			if victims:
+			if victims or pressed(inp, "mine"):
 				game.melee(self, victims)
 				swing_cd = Cfg.SWING_COOLDOWN
 				swung = true

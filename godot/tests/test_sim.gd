@@ -860,6 +860,34 @@ func test_fighting() -> void:
 	check(sp.mine_progress == 0.0 and spike.world.solid(15, 20), "a down swing that hits doesn't mine the floor (%.2f)"
 		% sp.mine_progress)
 
+	# A hit at 0% is an arc, not a slide along the floor.
+	sim = fight_sim(0.0, 15.1)
+	q = sim.players[1]
+	var floor_y := q.y
+	var peak := q.y
+	sim.update(Cfg.DT, [with({"mine": true}), IDLE])
+	for i in 30:
+		sim.update(Cfg.DT, [IDLE, IDLE])
+		peak = minf(peak, q.y)
+	check(floor_y - peak > 0.4, "a 0%% hit lifts the victim (%.2f tiles)" % (floor_y - peak))
+
+	# A click at nobody still swings (a visible miss), and doesn't swing again while held.
+	sim = floor_sim()
+	p = sim.players[0]
+	sim.update(Cfg.DT, [with({"mine": true, "down": true}), IDLE])
+	check(p.swing_t > 0 and p.swing_cd > 0, "a click at air swings")
+	run(sim, 20, [with({"mine": true, "down": true}), IDLE])
+	check(p.swing_t == 0.0, "holding at air doesn't keep swinging (it mines)")
+	check(p.mine_progress > 0 or sim.world.block_count() < 40, "holding mines the block you aim at")
+
+	# Stunned: no swinging back.
+	sim = fight_sim(0.0, 15.1)
+	p = sim.players[0]
+	q = sim.players[1]
+	p.stun = 0.3
+	sim.update(Cfg.DT, [with({"mine": true}), IDLE])
+	check(q.damage == 0.0 and p.swing_t == 0.0, "a stunned player can't swing")
+
 	# Knockback grows with damage %.
 	sim = fight_sim(112.0, 15.1)
 	q = sim.players[1]
@@ -895,7 +923,7 @@ func test_fighting() -> void:
 	check(not q.alive, "falling off the map kills")
 	check(q.falls == 1 and p.kos == 0, "no hit, no KO: it's a fall")
 	check(feed_has(sim, "fell"), "feed shows the fall")
-	print("fighting: swing damage/knock/stun/credit, no mine on hit, %.1fx farther at 112%% (kvx x%.2f), KO credit, plain fall OK"
+	print("fighting: swing damage/knock/stun/credit, no mine on hit, arc, whiff, hold mines, stunned can't swing, %.1fx farther at 112%% (kvx x%.2f), KO credit, plain fall OK"
 		% [far / near if near != 0.0 else 0.0, ratio])
 
 

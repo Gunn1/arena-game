@@ -39,8 +39,9 @@ func _init() -> void:
 	world.occupied = player_in_tile               # falling sand stops above players
 
 
-func sound(name: String, min_gap := 0.0) -> void:
-	events.append(["snd", name, min_gap])
+## by: the player who caused it, so an online client can skip sounds it already played itself.
+func sound(name: String, min_gap := 0.0, by := -1) -> void:
+	events.append(["snd", name, min_gap, by])
 
 
 func burst(pos: Vector2, color: Color, count: int, speed: float, life := 0.6, size := 4, up := 0.0) -> void:
@@ -222,15 +223,15 @@ static func knock_dir(aim: Vector2) -> Vector2:
 		return aim.normalized()
 	if aim.x == 0:
 		return Vector2(0, -1)
-	return Vector2(aim.x, minf(aim.y, 0.0) - 0.4).normalized()
+	return Vector2(aim.x, minf(aim.y, 0.0) - 0.75).normalized()   # about 37 degrees up: a real arc, not a slide
 
 
 func melee(p: Player, victims: Array) -> void:
 	var dir := knock_dir(Vector2(p.aim))
 	for v: Player in victims:
 		hit_player(v, p, dir, Cfg.SWING_DAMAGE, Cfg.SWING_KNOCK)
-	p.swing_t = 0.12
-	sound("swing")
+	p.swing_t = Cfg.SWING_SHOW
+	sound("swing", 0.0, p.index)
 
 
 ## Add damage %, then launch the target; knockback grows with its damage. attacker may be null.

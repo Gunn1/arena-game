@@ -92,6 +92,11 @@ var lobby_peers: Array = []       # host/server: peer ids, in join order
 var peer_index := {}              # peer id -> player index in the current match
 var remote := {}                  # peer id -> {"queue": Prediction.ServerQueue, "wheel": 0}
 var my_index := 0                 # client: which player I am
+# Client: my own swings show and sound the moment I click instead of a round trip later.
+var my_swing_t := 0.0
+var my_swing_cd := 0.0
+var my_swing_until := 0.0         # until then my swing_t is mine, not the host's, and its swing sound is skipped
+var mine_was_held := false
 var lobby_size := 0
 var dedicated := false            # client: the host is a dedicated server
 var sent_version := -1
@@ -903,6 +908,8 @@ func _on_snap(d: Dictionary) -> void:
 	var mouse = sim.players[my_index].mouse if had else null
 	var round_before := sim.round_no
 	_play_events(sim.apply_snapshot(d, my_index))
+	if had and my_index < sim.players.size() and time < my_swing_until:
+		sim.players[my_index].swing_t = my_swing_t
 	_record_trails()
 	var me := _my_player()
 	if me and my_index < d["ns"].size():
@@ -1023,6 +1030,7 @@ func _physics_process(_delta: float) -> void:
 			# between rounds, so don't predict then either; online there's no hitstop).
 			if me and me.alive and sim.state in ["play", "outro"] and sim.hitstop <= 0:
 				predictor.predict(me, sim.world, input)
+				_predict_swing(me, input)
 		for pos in sim.world.warnings:           # tick warnings for the shake effect only
 			sim.world.warnings[pos] = maxf(0.01, sim.world.warnings[pos] - Cfg.DT)
 		return
@@ -1092,8 +1100,25 @@ func _my_player() -> Player:
 	return sim.players[i] if i < sim.players.size() else null
 
 
+## Client: a click swings at once on my screen; the host still decides what it hits.
+func _predict_swing(me: Player, input: Dictionary) -> void:
+	my_swing_t = maxf(0.0, my_swing_t - Cfg.DT)
+	my_swing_cd = maxf(0.0, my_swing_cd - Cfg.DT)
+	var held: bool = input.get("mine", false)
+	if held and not mine_was_held and my_swing_cd == 0.0 and me.stun <= 0.0 and sim.state == "play":
+		my_swing_t = Cfg.SWING_SHOW
+		my_swing_cd = Cfg.SWING_COOLDOWN
+		my_swing_until = time + 0.8
+		sfx.play("swing")
+	mine_was_held = held
+	if time < my_swing_until:
+		me.swing_t = my_swing_t
+
+
 func _play_events(events: Array) -> void:
 	for e in events:
+		if e[0] == "snd" and mode == "client" and e.size() > 3 and e[3] == my_index and e[1] == "swing" and time < my_swing_until:
+			continue                               # already played when I clicked
 		if e[0] == "snd":
 			sfx.play(e[1], e[2])
 		elif e[0] == "pt":
@@ -1301,7 +1326,7 @@ func _draw_player(p: Player) -> void:
 	if p.swing_t > 0:
 		var c := _draw_centre(p) * CELL
 		var a := p.aim_vec.angle()                # the swing box follows the exact aim
-		var alpha := clampf(p.swing_t / 0.12, 0.0, 1.0)
+		var alpha := clampf(p.swing_t / Cfg.SWING_SHOW, 0.0, 1.0)
 		var r := 1.3 * CELL
 		overlay.draw_arc(c, r, a - 0.9, a + 0.9, 16, Color(Color.WHITE, alpha), 4.0)
 		overlay.draw_arc(c, r - 3.0, a - 0.9, a + 0.9, 16, Color(p.color, alpha), 2.0)
@@ -1397,7 +1422,7 @@ func _draw_character(p: Player, at: Vector2) -> void:
 ## chopping at the mine target while mining, otherwise held up and ready.
 func _pick_angle(p: Player, hand: Vector2) -> float:
 	if p.swing_t > 0:
-		var k := 1.0 - clampf(p.swing_t / 0.12, 0.0, 1.0)
+		var k := 1.0 - clampf(p.swing_t / Cfg.SWING_SHOW, 0.0, 1.0)
 		var aim_a := atan2(float(p.aim.y), absf(p.aim.x))
 		return aim_a - 1.8 + 2.4 * k
 	var mt: Vector2i = p.mine_target
