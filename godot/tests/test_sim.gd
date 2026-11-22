@@ -346,7 +346,34 @@ func test_wall_jump() -> void:
 		p.update(Cfg.DT, with({("right" if p.facing > 0 else "left"): true, "jump": climb_jump(g.world, p, f)}), g)
 		highest = minf(highest, p.y)
 	check(highest < 20, "a two-wall chimney can be climbed (reached row %.1f)" % highest)
-	print("wall jump: slide, kick, no single-wall climb, chimney climb OK (chimney reached row %.1f)" % highest)
+
+	# Falling with the floor just below a wall, jump waits for the landing: a normal jump, no kick.
+	g = wall_game()
+	for x in range(20, 30):
+		g.world.grid[30 * Cfg.COLS + x] = World.STONE
+	p.spawn(0, 0)
+	p.x = 30 - Cfg.PLAYER_W
+	p.y = 30 - Cfg.PLAYER_H - 0.3
+	p.vy = 6.0
+	p.update(Cfg.DT, with({"jump": true}), g)
+	check(p.kvx == 0.0 and p.last_wall == 0, "no wall jump just above the floor")
+	var jumped := false
+	for i in 6:
+		p.update(Cfg.DT, with({"jump": true}), g)
+		jumped = jumped or p.vy < -Cfg.WALL_JUMP_SPEED
+	check(jumped and p.kvx == 0.0, "the buffered press becomes a full ground jump")
+
+	# A ledge lip beside your feet isn't a wall.
+	g = wall_game()
+	g.world.grid.fill(0)
+	g.world.grid[20 * Cfg.COLS + 30] = World.STONE
+	p.spawn(0, 0)
+	p.x = 30 - Cfg.PLAYER_W
+	p.y = 20.0 - Cfg.PLAYER_H + 0.3                 # the block covers the bottom 0.3 of the body
+	check(p.wall_side(g.world) == 0, "a block beside your feet is not a wall")
+	p.y = 20.2
+	check(p.wall_side(g.world) == 1, "a block beside your head is a wall")
+	print("wall jump: slide, kick, no single-wall climb, ground first, ledge lips, chimney climb OK (chimney reached row %.1f)" % highest)
 
 
 ## True if a block is right beside p, on either side, level with its middle.
@@ -580,36 +607,33 @@ func inv_of(extra: Dictionary) -> Dictionary:
 func test_crafting() -> void:
 	var sim := floor_sim()
 	var p: Player = sim.players[0]
-	check(not p.craft("push"), "no materials, no craft")
+	check(not p.craft("fan"), "no materials, no craft")
 	p.inv = {"dirt": 9, "stone": 9, "copper": 9, "crystal": 9}
-	check(p.craft("push") and p.inv["dirt"] == 6 and p.slots[0]["charges"] == 3, "craft push")
-	check(p.craft("push") and p.slots[0]["charges"] == 6, "same item stacks")
-	p.craft("boost")
-	p.craft("laser")
-	p.craft("grapple")
-	check(p.slots[2]["item"] == "grapple", "full slots: replaces fewest charges")
+	check(p.craft("fan") and p.inv["dirt"] == 6 and p.slots[0]["charges"] == 2, "craft fan")
+	check(p.craft("fan") and p.slots[0]["charges"] == 4, "same item stacks")
+	p.craft("steel")
+	p.craft("bounce")
+	p.craft("turret")
+	check(p.slots[2]["item"] == "turret", "full slots: replaces fewest charges")
 
 	# Values: material value dirt 1, stone 1, copper 3, crystal 5.
-	var values := {"push": 3, "boost": 4, "platform": 7, "grapple": 5, "bomb": 9, "laser": 7}
+	var values := {"fan": 3, "bounce": 5, "steel": 6, "magnet": 7, "mine": 9, "turret": 10}
 	for key: String in values:
 		var v: int = Items.item_value(key)
 		check(v == int(values[key]), "%s is worth %d (got %d)" % [key, values[key], v])
 
 	# Quick craft picks the most valuable affordable recipe ("" if none).
-	# Note: platform and laser tie at 7, but anything that affords both also affords bomb (9),
-	# so the later-in-RECIPES tie-break can't show up with the current recipes.
 	var picks := [
 		[{}, ""],
-		[{"stone": 9}, ""],                                              # every non-dirt recipe needs copper or crystal
-		[{"dirt": 3}, "push"],
-		[{"dirt": 9}, "push"],                                           # platform still needs copper
-		[{"stone": 1, "copper": 1}, "boost"],
-		[{"stone": 3, "copper": 2}, "grapple"],                          # grapple 5 beats boost 4
-		[{"dirt": 4, "copper": 1}, "platform"],                          # platform 7 beats push 3
-		[{"stone": 2, "crystal": 1}, "laser"],
-		[{"dirt": 4, "stone": 2, "copper": 1}, "platform"],              # platform 7 beats grapple 5, boost 4, push 3
-		[{"stone": 2, "crystal": 1, "dirt": 4, "copper": 1}, "bomb"],    # affords platform and laser (7) but bomb is 9
-		[{"dirt": 4, "stone": 3, "copper": 2, "crystal": 1}, "bomb"],
+		[{"stone": 9}, ""],                                  # every non-dirt recipe needs copper or crystal
+		[{"dirt": 3}, "fan"],
+		[{"dirt": 9}, "fan"],
+		[{"dirt": 2, "copper": 1}, "bounce"],
+		[{"stone": 3, "copper": 1}, "steel"],
+		[{"stone": 3, "copper": 2}, "magnet"],               # magnet 7 beats steel 6
+		[{"dirt": 2, "stone": 3, "copper": 2}, "magnet"],    # also affords bounce and steel
+		[{"stone": 1, "copper": 1, "crystal": 1}, "mine"],
+		[{"stone": 2, "copper": 1, "crystal": 1}, "turret"], # turret 10 beats mine 9
 	]
 	for c: Array in picks:
 		var inv: Dictionary = inv_of(c[0])
@@ -618,22 +642,21 @@ func test_crafting() -> void:
 		check(got == want, "best_affordable %s -> \"%s\" (got \"%s\")" % [str(c[0]), want, got])
 		if want != "":
 			check(Items.can_afford(want, inv), "can_afford %s with %s" % [want, str(c[0])])
-	check(not Items.can_afford("bomb", inv_of({"stone": 3, "copper": 2})), "can't afford bomb without crystal")
+	check(not Items.can_afford("mine", inv_of({"stone": 3, "copper": 2})), "can't afford a mine without crystal")
 
-	var miss: String = Items.missing_text("boost", inv_of({"stone": 1}))
-	check(miss == "need 1 copper", "missing_text boost: \"%s\"" % miss)
-	miss = Items.missing_text("grapple", inv_of({}))
-	check(miss == "need 2 stone, 1 copper", "missing_text grapple: \"%s\"" % miss)
-	miss = Items.missing_text("push", inv_of({"dirt": 3}))
+	var miss: String = Items.missing_text("bounce", inv_of({"dirt": 2}))
+	check(miss == "need 1 copper", "missing_text bounce: \"%s\"" % miss)
+	miss = Items.missing_text("steel", inv_of({}))
+	check(miss == "need 3 stone, 1 copper", "missing_text steel: \"%s\"" % miss)
+	miss = Items.missing_text("fan", inv_of({"dirt": 3}))
 	check(miss == "", "missing_text is empty when affordable: \"%s\"" % miss)
 
 	# Next goal = fewest missing units; ties go to the lower value, then earlier in RECIPES.
-	# Empty: push 3, boost 2, platform 5, grapple 3, bomb 3, laser 3 -> boost.
 	var goals := [
-		[{}, "boost"],
-		[{"stone": 2}, "boost"],                   # boost, grapple, laser all miss 1; boost is cheapest
-		[{"dirt": 2}, "push"],                     # push misses 1, boost 2
-		[{"crystal": 1}, "boost"],                 # boost 2, laser 2, bomb 2; boost is cheapest
+		[{}, "fan"],                               # fan, bounce, magnet, mine all miss 3; fan is cheapest
+		[{"copper": 1}, "bounce"],                 # bounce, magnet, mine miss 2; bounce is cheapest
+		[{"stone": 2}, "steel"],                   # steel, magnet, mine, turret miss 2; steel is cheapest
+		[{"crystal": 1}, "mine"],                  # mine misses 2, the rest 3+
 	]
 	for c: Array in goals:
 		var want: String = c[1]
@@ -643,22 +666,22 @@ func test_crafting() -> void:
 	# Through the sim: one press crafts the best affordable recipe; holding doesn't repeat it.
 	sim = floor_sim()
 	p = sim.players[0]
-	p.inv = inv_of({"stone": 3, "copper": 2})
+	p.inv = inv_of({"stone": 4, "copper": 3})
 	sim.update(Cfg.DT, [with({"craft": true}), IDLE])
-	check(p.slots[0] != null and p.slots[0]["item"] == "grapple", "press craft crafts grapple (best affordable)")
-	check(p.last_crafted == "grapple", "last_crafted is grapple (got \"%s\")" % p.last_crafted)
+	check(p.slots[0] != null and p.slots[0]["item"] == "magnet", "press craft crafts magnet (best affordable)")
+	check(p.last_crafted == "magnet", "last_crafted is magnet (got \"%s\")" % p.last_crafted)
 	check(p.craft_t > 0.0, "craft_t set after crafting")
-	check(p.inv["stone"] == 1 and p.inv["copper"] == 1, "grapple cost paid: %s" % str(p.inv))
+	check(p.inv["stone"] == 3 and p.inv["copper"] == 1, "magnet cost paid: %s" % str(p.inv))
 	for i in 3:
 		sim.update(Cfg.DT, [with({"craft": true}), IDLE])
-	check(p.slots[1] == null and p.inv["stone"] == 1 and p.inv["copper"] == 1, "holding craft doesn't craft again")
+	check(p.slots[1] == null and p.inv["stone"] == 3 and p.inv["copper"] == 1, "holding craft doesn't craft again")
 	sim.update(Cfg.DT, [IDLE, IDLE])
 	sim.update(Cfg.DT, [with({"craft": true}), IDLE])
-	check(p.slots[1] != null and p.slots[1]["item"] == "boost", "second press crafts the next best (boost) into slot 2")
-	check(p.last_crafted == "boost" and p.inv["stone"] == 0 and p.inv["copper"] == 0, "boost cost paid, last_crafted boost")
+	check(p.slots[1] != null and p.slots[1]["item"] == "steel", "second press crafts the next best (steel) into slot 2")
+	check(p.last_crafted == "steel" and p.inv["stone"] == 0 and p.inv["copper"] == 0, "steel cost paid, last_crafted steel")
 	sim.update(Cfg.DT, [IDLE, IDLE])
 	sim.update(Cfg.DT, [with({"item2": true}), IDLE])
-	check(p.vy < -10 and p.slots[1] != null and p.slots[1]["charges"] == 2, "item2 uses the crafted boost")
+	check(sim.world.get_tile(16, 19) == World.STEEL and p.slots[1]["charges"] == 3, "item2 places the crafted steel in front")
 
 	# Holding craft no longer steers a menu: left/right walk as normal.
 	sim = floor_sim()
@@ -690,63 +713,96 @@ func test_items() -> void:
 		sim.update(Cfg.DT, [with({"mine": true}), IDLE])
 	check(p.inv["copper"] == 1 and not sim.world.solid(16, 19), "holding mine on ore breaks it and gives copper")
 
+	# Placing: at your target, owned by you; no room = nothing spent.
 	sim = floor_sim()
 	p = sim.players[0]
-	check(sim.use_item(p, "boost") and p.vy < -10, "boost")
+	check(sim.use_item(p, "steel") and sim.world.get_tile(16, 19) == World.STEEL, "steel goes in front of you")
+	check(sim.world.owners.get(Vector2i(16, 19), -1) == 0, "placed blocks remember who placed them")
+	sim.world.set_tile(16, 18, World.STONE)
+	p.aim = Vector2i(1, 0)
+	check(not sim.use_item(p, "steel"), "no room: nothing placed")
 
+	# Special blocks reach further than plain blocks.
 	sim = floor_sim()
 	p = sim.players[0]
-	p.y -= 3
-	check(sim.use_item(p, "platform"), "platform used")
-	var row := floori(p.y + Cfg.PLAYER_H - 0.01) + 1
-	var n := 0
-	for x in range(10, 25):
-		if sim.world.get_tile(x, row) == World.PLACED:
-			n += 1
-	check(n == 5, "platform places 5 blocks")
+	p.mouse = p.centre() + Vector2(4.0, 0.3)
+	var far := p.target(sim.world, true, Cfg.BLOCK_REACH)
+	check(p.target(sim.world, true) != far, "plain placing can't reach 4 tiles")
+	check(sim.use_item(p, "steel") and sim.world.get_tile(far.x, far.y) == World.STEEL, "special blocks reach 4 tiles")
 
+	# Steel: slow to mine and bombproof.
 	sim = floor_sim()
-	p = sim.players[0]
-	sim.world.grid[11 * Cfg.COLS + 23] = World.STONE
-	p.aim = Vector2i(1, -1)
-	var target := Vector2(23.5, 11.5)
-	var d0 := p.centre().distance_to(target)
-	check(sim.use_item(p, "grapple") and p.grapple != null, "grapple hooks")
-	run(sim, 30)
-	check(p.centre().distance_to(target) < d0 - 4, "grapple pulls you in")
-	sim = floor_sim()
-	p = sim.players[0]
-	p.aim = Vector2i(0, -1)
-	check(not sim.use_item(p, "grapple"), "grapple into the sky spends nothing")
+	sim.world.set_tile(30, 19, World.STEEL)
+	sim.bombs.append({"x": 31.5, "y": 19.5, "vx": 0.0, "vy": 0.0, "fuse": 0.01, "owner": -1})
+	run(sim, 2)
+	check(sim.world.get_tile(30, 19) == World.STEEL and sim.world.get_tile(31, 20) == World.EMPTY, "steel survives a blast that digs stone")
+	check(Cfg.MINE_TIME[World.STEEL] > Cfg.MINE_TIME[World.STONE] * 3, "steel is slow to mine")
 
+	# Fan: placed right of you it blows right, along its row, and not through blocks.
 	sim = floor_sim()
 	p = sim.players[0]
 	var q: Player = sim.players[1]
-	q.x = p.x + 2.5
-	var qx := q.x
-	p.facing = 1
-	sim.use_item(p, "push")
-	run(sim, 40)
-	check(q.x > qx + 2.5, "push knocks the other player away")
-
+	p.mouse = Vector2(17.5, 19.5)
+	check(sim.use_item(p, "fan") and sim.world.get_tile(17, 19) == World.FAN_R, "a fan placed to your right blows right")
+	q.x = 20.0
+	var px := p.x
+	run(sim, 30)
+	check(q.x > 22.0, "the fan blows a player in its row away (moved %.2f)" % (q.x - 20.0))
+	check(absf(p.x - px) < 0.05, "a fan doesn't blow behind itself")
 	sim = floor_sim()
-	p = sim.players[0]
-	var before := sim.world.block_count()
-	p.aim = Vector2i(0, 1)
-	sim.use_item(p, "laser")
-	check(sim.world.block_count() < before, "laser cuts blocks")
+	q = sim.players[1]
+	sim.world.set_tile(17, 19, World.FAN_R)
+	sim.world.set_tile(19, 19, World.STONE)
+	q.x = 21.0
+	run(sim, 30)
+	check(absf(q.x - 21.0) < 0.05, "a block stops the wind")
 
+	# Magnet: pulls players within range toward it, not ones farther away.
+	sim = floor_sim()
+	q = sim.players[1]
+	sim.world.set_tile(36, 19, World.MAGNET)
+	var p0x: float = sim.players[0].x
+	run(sim, 40)
+	check(q.x < 39.5, "a magnet pulls a nearby player in (q.x %.2f)" % q.x)
+	check(absf(sim.players[0].x - p0x) < 0.05, "a magnet far away does nothing")
+
+	# Bounce pad: stepping on it launches you high.
+	sim = floor_sim()
+	q = sim.players[1]
+	sim.world.set_tile(40, 20, World.BOUNCE)
+	var top := q.y
+	for i in 40:
+		sim.update(Cfg.DT, [IDLE, IDLE])
+		top = minf(top, q.y)
+	check(top < 18.4 - 4.0, "a bounce pad launches you over 4 tiles (rose %.2f)" % (18.4 - top))
+
+	# Mine: placed TNT goes off when an enemy gets close, credited to whoever placed it.
 	sim = floor_sim()
 	p = sim.players[0]
 	q = sim.players[1]
-	q.x = p.x + 2
-	before = sim.world.block_count()
-	p.aim = Vector2i(0, 1)
-	sim.use_item(p, "bomb")
-	run(sim, int(Cfg.BOMB_FUSE * 60) + 5)
-	check(sim.world.block_count() <= before - 4, "bomb blows a hole")
-	check(absf(q.kvx) > 1 or q.y < 18, "bomb flings nearby players")
-	print("items: mining ore, boost, platform, grapple hit+miss, push, laser, bomb OK")
+	check(sim.use_item(p, "mine") and sim.world.get_tile(16, 19) == World.TNT, "mine placed")
+	run(sim, 10)
+	check(sim.world.get_tile(16, 19) == World.TNT and sim.bombs.is_empty(), "your own mine ignores you")
+	q.x = 17.6
+	run(sim, 1)
+	check(sim.bombs.size() == 1 and int(sim.bombs[0]["owner"]) == 0, "an enemy near the mine sets it off, for the owner")
+	run(sim, int(Cfg.MINE_FUSE * 60) + 3)
+	check(q.damage > 0 and sim.bombs.is_empty(), "the mine blows up and hurts the enemy")
+
+	# Turret: shoots at enemies in range (never its owner) and hits them.
+	sim = floor_sim()
+	p = sim.players[0]
+	q = sim.players[1]
+	check(sim.use_item(p, "turret"), "turret placed")
+	run(sim, 90)
+	check(sim.projectiles.is_empty() and p.damage == 0, "a turret doesn't shoot its owner")
+	q.x = 24.0
+	var hit := false
+	for i in 120:
+		sim.update(Cfg.DT, [IDLE, IDLE])
+		hit = hit or q.damage > 0
+	check(hit, "a turret shoots an enemy in range")
+	print("items: ore, placing + reach, steel, fan, magnet, bounce pad, mine, turret OK")
 
 
 ## Two players side by side on the test floor, p (player 0) at x facing right, q right next to it.

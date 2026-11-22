@@ -12,17 +12,18 @@ const DT := 1.0 / 60.0
 
 # Movement
 const GRAVITY := 45.0
-const JUMP_SPEED := 15.0          # about 2.5 tiles high
+const JUMP_SPEED := 17.7          # about 3.5 tiles high (v^2 / 2g)
 const MOVE_SPEED := 8.0
 const MAX_FALL := 28.0
 const PLAYER_W := 0.8
 const PLAYER_H := 1.6
 const COYOTE := 0.08              # grace time to jump after walking off a ledge
-const WALL_JUMP_SPEED := 13.5
+const WALL_JUMP_SPEED := 15.5     # about 2.7 tiles
 const WALL_KICK := 11.0           # sideways push away from the wall (fades like knockback)
 const WALL_SLIDE_SPEED := 4.0     # max fall speed while holding into a wall
 const WALL_COYOTE := 0.1
-const WALL_LOCK := 0.15           # after a wall jump, walking is ignored this long
+const WALL_LOCK := 0.12           # after a wall jump, walking back into that wall is ignored this long
+const WALL_GROUND_GAP := 0.6      # falling this close above ground, jump waits to land instead of wall jumping
 const KNOCK_DECAY := 5.0
 const ACCEL_GROUND := 70.0        # tiles/s^2 toward the walk speed (MOVE_SPEED * input)
 const ACCEL_AIR := 40.0
@@ -34,10 +35,12 @@ const LAND_SPEED := 12.0          # landing faster than this plays "land"
 
 # Blocks and items
 const REACH := 2.5                # mouse targeting: tiles from player centre to tile centre
+const BLOCK_REACH := 4.5          # placing special blocks reaches further
 # Seconds of holding "mine" to break a tile. Int keys match World's enum (config can't use
 # World's names): DIRT=1, STONE=2, PLACED=3, COPPER=4, CRYSTAL=5, SAND=6, ICE=7, SLIME=8,
-# LAVA=9 (can't be mined), TNT=10.
-const MINE_TIME := {1: 0.22, 2: 0.45, 3: 0.18, 4: 0.55, 5: 0.65, 6: 0.12, 7: 0.35, 8: 0.25, 10: 0.3}
+# LAVA=9 (can't be mined), TNT=10, STEEL=11, FAN_L=12, FAN_R=13, MAGNET=14, TURRET=15.
+const MINE_TIME := {1: 0.22, 2: 0.45, 3: 0.18, 4: 0.55, 5: 0.65, 6: 0.12, 7: 0.35, 8: 0.25, 10: 0.3,
+	11: 1.6, 12: 0.4, 13: 0.4, 14: 0.4, 15: 0.5}
 const PLACE_COOLDOWN := 0.12
 const CARRY_LIMIT := 15           # dirt + stone
 const ORE_LIMIT := 9
@@ -91,24 +94,27 @@ const HITSTOP_BASE := 0.04        # the whole game freezes briefly on a hit: bas
 const HITSTOP_PER_KNOCK := 0.003
 const HITSTOP_MAX := 0.14
 
-# Item strengths (costs, uses and cooldowns are in items.gd)
-const PUSH_SPEED := 24.0
+# Special blocks (costs and counts are in items.gd)
+const BLOCK_COOLDOWN := 0.25      # between placing two special blocks
+const BOUNCE_LAUNCH := 22.0       # a placed bounce pad throws anyone landing on it at least this fast
+const FAN_RANGE := 8              # a fan blows along its row this many tiles, stopped by blocks
+const FAN_SPEED := 14.0           # ...pushing players toward this sideways speed (weaker far away)
+const FAN_ACCEL := 60.0
+const MAGNET_RANGE := 6.0         # a magnet pulls everyone within this many tiles toward it
+const MAGNET_PULL := 28.0         # tiles/s^2 at the magnet, fading to 0 at the edge
+const TURRET_RANGE := 12.0        # a turret shoots at the nearest enemy within this range, in about its row
+const TURRET_ROWS := 3.0          # ...up to this many tiles above or below it
+const TURRET_RELOAD := 1.4
+const MINE_TRIGGER := 1.6         # placed TNT goes off when an enemy gets this close to it...
+const MINE_FUSE := 0.35           # ...this long later
+const PUSH_SPEED := 22.0          # turret shots
 const PUSH_RANGE := 12.0
-const PUSH_KNOCK := 14.0
-const PUSH_DAMAGE := 12.0
-const LASER_LENGTH := 10
-const LASER_SHOW := 0.25
-const BOOST_SPEED := 17.0
-const GRAPPLE_RANGE := 12
-const GRAPPLE_SPEED := 24.0
-const GRAPPLE_TIME := 0.7
-const BOMB_THROW := 13.0
-const BOMB_FUSE := 1.3
+const PUSH_KNOCK := 13.0
+const PUSH_DAMAGE := 9.0
 const BOMB_RADIUS := 2.3
 const BOMB_BLAST := 4.0
 const BOMB_KNOCK := 16.0
 const BOMB_DAMAGE := 18.0
-const PLATFORM_WIDTH := 5
 
 # Rounds
 const ROUNDS_TO_WIN := 3
@@ -122,7 +128,7 @@ const PUBLIC_SERVER := "arena.tylergunn.me"   # "Play online" on the title scree
 # Game version. Online, the host and every player must match exactly: it's sent as the
 # WebSocket subprotocol, so a different version can't even connect (no silent breakage).
 # The release workflow checks that the git tag (vX.Y.Z) matches this.
-const GAME_VERSION := "0.6.2"
+const GAME_VERSION := "0.7.0"
 const NET_PROTOCOL := "arena-" + GAME_VERSION
 
 const PLAYER_COLORS := [Color(1.0, 0.42, 0.42), Color(0.31, 0.66, 1.0), Color(1.0, 0.82, 0.25), Color(0.72, 0.48, 1.0)]

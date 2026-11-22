@@ -1,26 +1,28 @@
-## Craftable items. Every item moves players or blocks; none of them does damage.
-## To add one: an entry in ITEMS, an icon in draw_icon, and its effect in GameSim.use_item.
+## Craftable special blocks. You place them like blocks (further away), and each one does
+## something to players around it. To add one: an entry in ITEMS (with its World tile), a look in
+## main.gd's tile painting, and its effect in Player._fields (movement) or GameSim (host-only).
 class_name Items
 
 const MATERIALS := ["dirt", "stone", "copper", "crystal"]
 const MATERIAL_COLORS := {"dirt": Color(0.54, 0.35, 0.2), "stone": Color(0.47, 0.48, 0.57),
 	"copper": Color(0.9, 0.55, 0.24), "crystal": Color(0.35, 0.88, 0.94)}
 
+# "tile" is what gets placed (a fan picks FAN_L or FAN_R from where you stand).
 const ITEMS := {
-	"push": {"name": "Push Wand", "cost": {"dirt": 3}, "charges": 3, "cooldown": 0.8,
-		"help": "knocks a player away"},
-	"boost": {"name": "Rocket Boost", "cost": {"stone": 1, "copper": 1}, "charges": 3, "cooldown": 0.4,
-		"help": "blast upward, works mid-air"},
-	"platform": {"name": "Platform", "cost": {"dirt": 4, "copper": 1}, "charges": 1, "cooldown": 0.5,
-		"help": "5 blocks under your feet"},
-	"grapple": {"name": "Grapple", "cost": {"stone": 2, "copper": 1}, "charges": 3, "cooldown": 0.5,
-		"help": "pulls you to a block"},
-	"bomb": {"name": "Bomb", "cost": {"stone": 1, "copper": 1, "crystal": 1}, "charges": 2, "cooldown": 1.0,
-		"help": "blows a hole, flings players"},
-	"laser": {"name": "Laser", "cost": {"stone": 2, "crystal": 1}, "charges": 2, "cooldown": 1.5,
-		"help": "cuts a line of blocks"},
+	"fan": {"name": "Fan", "cost": {"dirt": 3}, "charges": 2, "tile": World.FAN_R,
+		"help": "blows players away along its row"},
+	"bounce": {"name": "Bounce Pad", "cost": {"dirt": 2, "copper": 1}, "charges": 3, "tile": World.BOUNCE,
+		"help": "launches anyone who steps on it"},
+	"steel": {"name": "Steel", "cost": {"stone": 3, "copper": 1}, "charges": 4, "tile": World.STEEL,
+		"help": "slow to mine, bombproof"},
+	"magnet": {"name": "Magnet", "cost": {"stone": 1, "copper": 2}, "charges": 2, "tile": World.MAGNET,
+		"help": "pulls everyone nearby toward it"},
+	"mine": {"name": "Mine", "cost": {"stone": 1, "copper": 1, "crystal": 1}, "charges": 2, "tile": World.TNT,
+		"help": "TNT that blows when an enemy gets close"},
+	"turret": {"name": "Turret", "cost": {"stone": 2, "copper": 1, "crystal": 1}, "charges": 1, "tile": World.TURRET,
+		"help": "shoots at enemies in range"},
 }
-const RECIPES := ["push", "boost", "platform", "grapple", "bomb", "laser"]
+const RECIPES := ["fan", "bounce", "steel", "magnet", "mine", "turret"]
 const MATERIAL_VALUE := {"dirt": 1, "stone": 1, "copper": 3, "crystal": 5}
 
 
@@ -106,33 +108,56 @@ static func cost_text(key: String) -> String:
 	return " ".join(parts)
 
 
-## Small picture of an item, drawn with shapes so there are no image files.
+## Small picture of an item: its block, drawn with shapes so there are no image files.
 static func draw_icon(ci: CanvasItem, key: String, r: Rect2, color: Color, dim := false) -> void:
+	var tile: int = ITEMS[key]["tile"]
+	draw_block(ci, tile, r.grow(-2), dim)
+
+
+## A special block's look, for icons and for the map (main.gd paints the same shapes into its atlas).
+static func block_color(tile: int) -> Color:
+	match tile:
+		World.STEEL: return Color(0.62, 0.66, 0.72)
+		World.FAN_L, World.FAN_R: return Color(0.36, 0.62, 0.78)
+		World.MAGNET: return Color(0.78, 0.22, 0.26)
+		World.TURRET: return Color(0.34, 0.36, 0.42)
+		World.BOUNCE: return Color(0.98, 0.7, 0.2)
+		World.TNT: return Color(0.8, 0.16, 0.14)
+	return Color.WHITE
+
+
+static func draw_block(ci: CanvasItem, tile: int, r: Rect2, dim := false) -> void:
+	var base := block_color(tile)
+	if dim:
+		base = base.lerp(Color(0.4, 0.41, 0.5), 0.6)
+	var white := Color(0.85, 0.85, 0.9) if dim else Color.WHITE
 	var c := r.get_center()
 	var s := r.size.x
-	var ink := Color(0.43, 0.44, 0.55) if dim else color
-	var white := Color(0.51, 0.51, 0.59) if dim else Color.WHITE
-	match key:
-		"push":
+	ci.draw_rect(r, base)
+	ci.draw_rect(r, base.darkened(0.4), false, 1.0)
+	match tile:
+		World.STEEL:
+			for d: Vector2 in [Vector2(0.22, 0.22), Vector2(0.78, 0.22), Vector2(0.22, 0.78), Vector2(0.78, 0.78)]:
+				ci.draw_circle(r.position + d * s, maxf(1.0, s * 0.07), base.darkened(0.45))
+		World.FAN_L, World.FAN_R:
+			var dir := -1.0 if tile == World.FAN_L else 1.0
 			for i in 3:
-				var rad := s * (0.18 + 0.12 * i)
-				ci.draw_arc(c - Vector2(s * 0.1, 0), rad, -0.9, 0.9, 8, ink if i else white, 2.0)
-		"boost":
-			ci.draw_colored_polygon(PackedVector2Array([Vector2(c.x, r.position.y + 3), Vector2(c.x + s * 0.3, c.y + 2), Vector2(c.x - s * 0.3, c.y + 2)]), ink)
-			ci.draw_rect(Rect2(c.x - s * 0.12, c.y, s * 0.24, s * 0.22), ink)
-			ci.draw_colored_polygon(PackedVector2Array([Vector2(c.x - s * 0.12, r.end.y - s * 0.25), Vector2(c.x + s * 0.12, r.end.y - s * 0.25), Vector2(c.x, r.end.y - 2)]),
-				ink if dim else Color(1.0, 0.67, 0.24))
-		"platform":
-			ci.draw_rect(Rect2(r.position.x + 3, c.y + 2, s - 6, s * 0.2), ink)
-			ci.draw_line(Vector2(c.x, r.position.y + 4), Vector2(c.x, c.y - 2), white, 2.0)
-			ci.draw_colored_polygon(PackedVector2Array([Vector2(c.x - 4, c.y - 5), Vector2(c.x + 4, c.y - 5), Vector2(c.x, c.y)]), white)
-		"grapple":
-			ci.draw_line(Vector2(r.position.x + 4, r.end.y - 4), Vector2(c.x + 3, c.y - 3), white, 2.0)
-			ci.draw_arc(Vector2(c.x + s * 0.18, r.position.y + s * 0.3), s * 0.2, PI, TAU * 0.95, 10, ink, 3.0)
-		"bomb":
-			ci.draw_circle(Vector2(c.x - 1, c.y + 2), s * 0.3, ink)
-			ci.draw_line(Vector2(c.x + s * 0.12, c.y - s * 0.18), Vector2(c.x + s * 0.3, r.position.y + 3), white, 2.0)
-			ci.draw_circle(Vector2(c.x + s * 0.3, r.position.y + 3), 2.0, ink if dim else Color(1.0, 0.78, 0.31))
-		"laser":
-			ci.draw_line(Vector2(r.position.x + 3, r.end.y - 3), Vector2(r.end.x - 3, r.position.y + 3), ink, 5.0)
-			ci.draw_line(Vector2(r.position.x + 3, r.end.y - 3), Vector2(r.end.x - 3, r.position.y + 3), white, 1.0)
+				var y := r.position.y + s * (0.25 + 0.25 * i)
+				ci.draw_line(Vector2(c.x - dir * s * 0.3, y), Vector2(c.x + dir * s * 0.3, y), white, 1.5)
+			ci.draw_colored_polygon(PackedVector2Array([Vector2(c.x + dir * s * 0.42, c.y),
+				Vector2(c.x + dir * s * 0.18, c.y - s * 0.2), Vector2(c.x + dir * s * 0.18, c.y + s * 0.2)]), white)
+		World.MAGNET:
+			ci.draw_arc(Vector2(c.x, c.y - s * 0.05), s * 0.26, 0.0, PI, 10, white, maxf(2.0, s * 0.14))
+			ci.draw_rect(Rect2(c.x - s * 0.33, c.y - s * 0.3, s * 0.14, s * 0.24), white)
+			ci.draw_rect(Rect2(c.x + s * 0.19, c.y - s * 0.3, s * 0.14, s * 0.24), white)
+		World.TURRET:
+			ci.draw_circle(c, s * 0.26, base.lightened(0.25))
+			ci.draw_circle(c, s * 0.12, Color(1.0, 0.35, 0.3) if not dim else white)
+		World.BOUNCE:
+			for i in 3:
+				var y := r.position.y + s * (0.3 + 0.2 * i)
+				ci.draw_polyline(PackedVector2Array([Vector2(r.position.x + s * 0.15, y), Vector2(c.x - s * 0.15, y - s * 0.1),
+					Vector2(c.x + s * 0.15, y), Vector2(r.end.x - s * 0.15, y - s * 0.1)]), white, 1.5)
+		World.TNT:
+			ci.draw_rect(Rect2(r.position.x, c.y - s * 0.12, s, s * 0.24), Color(0.95, 0.9, 0.8))
+			ci.draw_circle(Vector2(c.x, r.position.y + s * 0.15), maxf(1.5, s * 0.08), Color(1.0, 0.8, 0.3))

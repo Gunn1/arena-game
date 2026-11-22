@@ -176,7 +176,8 @@ func _arg(args: PackedStringArray, flag: String, fallback: String) -> String:
 # Atlas layout: one row per tile type; columns are (air mask * VARIANTS + noise variant).
 # The mask says which of the 4 neighbours are air, so edges can be shaded per tile.
 const TILE_TYPES := [World.DIRT, World.STONE, World.PLACED, World.COPPER, World.CRYSTAL,
-	World.SAND, World.ICE, World.SLIME, World.LAVA, World.TNT]
+	World.SAND, World.ICE, World.SLIME, World.LAVA, World.TNT, World.STEEL, World.FAN_L, World.FAN_R,
+	World.MAGNET, World.TURRET, World.BOUNCE]
 const VARIANTS := 3
 # "TNT" in a 3x5 pixel font, one string per row.
 const TNT_LETTERS := ["### # # ###", " #  ###  # ", " #  ###  # ", " #  # #  # ", " #  # #  # "]
@@ -198,7 +199,7 @@ func _tile_color(tile: int) -> Color:
 		return look["dirt"]
 	if tile == World.STONE or ORE_COLORS.has(tile):
 		return look["stone"]
-	return TILE_COLORS.get(tile, Color.WHITE)
+	return TILE_COLORS.get(tile, Items.block_color(tile))
 
 
 ## The atlas for the current `look` (rebuilt when the biome changes).
@@ -237,6 +238,15 @@ func _paint_base(tile: int, rng: RandomNumberGenerator) -> Image:
 		return img
 	if tile == World.TNT:
 		_paint_tnt(img, base)
+		return img
+	if tile == World.STEEL:
+		img.fill(base)
+		img.fill_rect(Rect2i(0, 0, CELL, 3), base.lightened(0.2))
+		for d: Vector2i in [Vector2i(3, 4), Vector2i(CELL - 5, 4), Vector2i(3, CELL - 5), Vector2i(CELL - 5, CELL - 5)]:
+			img.fill_rect(Rect2i(d.x, d.y, 2, 2), base.darkened(0.45))
+		return img
+	if tile in World.DEVICES:
+		img.fill(base)                           # the overlay draws the details on top (_draw_devices)
 		return img
 	for cy in CELL / 2:
 		for cx in CELL / 2:
@@ -338,6 +348,37 @@ func _paint_tnt(img: Image, base: Color) -> void:
 		for col in line.length():
 			if line[col] == "#":
 				img.set_pixel(4 + col, 7 + row, ink)
+
+
+func _owner_color(i: int) -> Color:
+	return sim.players[i].color if i >= 0 and i < sim.players.size() else Color(0.9, 0.9, 0.9)
+
+
+## Special blocks: their faces, plus what they do around them (fan wind, magnet rings).
+func _draw_devices() -> void:
+	var w := sim.world
+	for pos: Vector2i in w.devices:
+		var tile: int = w.devices[pos]
+		var r := Rect2(Vector2(pos) * CELL, Vector2(CELL, CELL))
+		if tile == World.FAN_L or tile == World.FAN_R:
+			var dir := -1 if tile == World.FAN_L else 1
+			var reach := 0
+			while reach < Cfg.FAN_RANGE and not w.solid(pos.x + dir * (reach + 1), pos.y):
+				reach += 1
+			if reach > 0:
+				for i in 4:
+					var k := fmod(time * 6.0 + i * reach / 4.0, float(reach))
+					var sx := (pos.x + 0.5 + dir * (0.5 + k)) * CELL
+					var sy := (pos.y + 0.2 + 0.2 * (i % 4)) * CELL
+					var a := 0.45 * (1.0 - k / reach)
+					overlay.draw_line(Vector2(sx, sy), Vector2(sx - dir * 10, sy), Color(0.85, 0.95, 1.0, a), 2.0)
+		elif tile == World.MAGNET:
+			var c := (Vector2(pos) + Vector2(0.5, 0.5)) * CELL
+			overlay.draw_arc(c, Cfg.MAGNET_RANGE * CELL, 0, TAU, 48, Color(0.95, 0.3, 0.35, 0.12), 1.5)
+			for i in 2:
+				var f := 1.0 - fmod(time * 0.7 + i * 0.5, 1.0)
+				overlay.draw_arc(c, f * Cfg.MAGNET_RANGE * CELL, 0, TAU, 40, Color(0.95, 0.3, 0.35, 0.35 * (1.0 - f)), 2.0)
+		Items.draw_block(overlay, tile, r)
 
 
 ## Shading where the tile touches air: lit top (grass on dirt), dark bottom, darker sides,
@@ -1187,26 +1228,21 @@ func _draw_overlay() -> void:
 	for p: Player in sim.players:
 		if p.alive:
 			_draw_mining(p)
-	for p: Player in sim.players:
-		if p.alive and p.grapple != null:
-			overlay.draw_line(_draw_centre(p) * CELL, Vector2(p.grapple.x, p.grapple.y) * CELL, Color(0.86, 0.86, 0.9), 2.0)
+			_draw_block_ghost(p)
+	_draw_devices()
 	for p: Player in sim.players:
 		if p.alive:
 			_draw_player(p)
 	for pr in sim.projectiles:
 		var pos := Vector2(pr["x"], pr["y"]) * CELL
-		overlay.draw_circle(pos, 7.0, sim.players[pr["owner"]].color)
-		overlay.draw_circle(pos, 3.0, Color.WHITE)
+		overlay.draw_circle(pos, 6.0, _owner_color(pr["owner"]))
+		overlay.draw_circle(pos, 3.0, Color(1.0, 0.45, 0.35))
 	for b in sim.bombs:
 		var pos := Vector2(b["x"], b["y"]) * CELL
 		overlay.draw_circle(pos, 7.0, Color(0.12, 0.12, 0.16))
-		overlay.draw_arc(pos, 7.0, 0, TAU, 16, sim.players[b["owner"]].color, 2.0)
+		overlay.draw_arc(pos, 7.0, 0, TAU, 16, _owner_color(b["owner"]), 2.0)
 		if int(b["fuse"] * (12 if b["fuse"] < 0.5 else 5)) % 2:
 			overlay.draw_circle(pos + Vector2(5, -6), 3.0, Color(1.0, 0.86, 0.35))
-	for b in sim.beams:
-		var col: Color = sim.players[b["owner"]].color
-		overlay.draw_line(b["from"] * CELL, b["to"] * CELL, col, 8.0)
-		overlay.draw_line(b["from"] * CELL, b["to"] * CELL, Color.WHITE, 3.0)
 	for p in particles:
 		var fade := clampf(p[2] / 0.25, 0.0, 1.0)
 		var col: Color = p[3]
@@ -1399,6 +1435,17 @@ func _draw_mining(p: Player) -> void:
 	overlay.draw_rect(Rect2(bar.position, Vector2(bar.size.x * progress, bar.size.y)), p.color)
 
 
+## Where an item key would put your special block: a faint outline (mouse players on this screen).
+func _draw_block_ghost(p: Player) -> void:
+	var mine: bool = mode == "local" or (mode == "client" and p.index == my_index) or (mode == "host" and p.index == 0)
+	if not mine or p.mouse == null or p.slots.all(func(sl): return sl == null):
+		return
+	var t := p.target(sim.world, true, Cfg.BLOCK_REACH)
+	if sim.world.get_tile(t.x, t.y) != World.EMPTY:
+		return
+	overlay.draw_rect(Rect2(Vector2(t) * CELL, Vector2(CELL, CELL)).grow(-1), Color(p.color, 0.5 + 0.2 * sin(time * 6.0)), false, 2.0)
+
+
 func _draw_hud() -> void:
 	match screen:
 		"title": _draw_title()
@@ -1552,7 +1599,7 @@ func _draw_title() -> void:
 	text(hud, "v%s" % Cfg.GAME_VERSION, Vector2(10, HEIGHT - 12), 14, DIM)
 	var cx := WIDTH / 2.0
 	text(hud, "ARENA (working title)", Vector2(cx, 100), 64, INK, true)
-	text(hud, "Mine blocks and ore, craft items, and don't fall out of the map.", Vector2(cx, 145), 22, DIM, true)
+	text(hud, "Mine blocks and ore, craft special blocks, and don't fall out of the map.", Vector2(cx, 145), 22, DIM, true)
 	text(hud, "Hits raise damage %: the higher it is, the farther you fly. The edges crumble inward.", Vector2(cx, 175), 22, DIM, true)
 	text(hud, "Press Enter to play online", Vector2(cx, 232), 30, INK, true)
 	var options := "J = join a friend by address     2 / 3 / 4 = local players on this device"
@@ -1564,7 +1611,7 @@ func _draw_title() -> void:
 		"Q/E/R items   F craft   the mouse picks the block within reach",
 		"Local P2:  J/L move   I jump   K aim down   hold U: mine / hit   O place   7/8/9 items   H craft",
 		"Controller:  stick move   A jump   right stick aim   hold RT: mine / hit   LT place   X/Y/B items   RB craft",
-		"Craft: one press makes the best item you can afford (shown on your HUD).   M = mute   N = music",
+		"Craft: one press makes the best special block you can afford. Items keys place it (farther reach).   M = mute   N = music",
 	]
 	for i in lines.size():
 		text(hud, lines[i], Vector2(cx, 292 + i * 24), 15, DIM, true)
@@ -1576,7 +1623,7 @@ func _draw_title() -> void:
 		var r := Rect2(rx, ry, 28, 28)
 		hud.draw_rect(r, SLOT_BG)
 		Items.draw_icon(hud, key, r.grow(-3), INK)
-		var uses := "%d use%s" % [item["charges"], "" if item["charges"] == 1 else "s"]
+		var uses := "%d block%s" % [item["charges"], "" if item["charges"] == 1 else "s"]
 		text(hud, item["name"], Vector2(rx + 38, ry + 20), 16, INK)
 		text(hud, "%s (%s)" % [item["help"], uses], Vector2(rx + 160, ry + 20), 16, DIM)
 		text(hud, Items.cost_text(key), Vector2(rx + 460, ry + 20), 16, DIM)

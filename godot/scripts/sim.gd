@@ -6,9 +6,9 @@ extends RefCounted
 
 var world := World.new()
 var players: Array = []           # Player
-var projectiles: Array = []       # {x, y, dir, dist, owner}
-var bombs: Array = []             # {x, y, vx, vy, fuse, owner}
-var beams: Array = []             # {from, to, owner, time}
+var projectiles: Array = []       # turret shots: {x, y, vx, vy, dist, owner} (owner -1: nobody)
+var bombs: Array = []             # lit TNT: {x, y, vx, vy, fuse, owner}
+var turret_cd := {}               # Vector2i -> seconds until that turret can shoot again
 var events: Array = []            # ["snd", name, min_gap] / ["pt", pos, color, count, speed, life, size, up]
 var state := "intro"              # intro, play, outro, match_over
 var timer := 0.0
@@ -75,7 +75,7 @@ func new_round() -> void:
 		players[i].spawn(world.spawns[i].x, world.spawns[i].y)
 	projectiles.clear()
 	bombs.clear()
-	beams.clear()
+	turret_cd.clear()
 	past.clear()                                 # everyone respawned: no rewinding into last round
 	round_time = 0.0
 	state = "intro"
@@ -131,12 +131,10 @@ func update(dt: float, inputs: Array) -> void:
 			if not p.alive:
 				_on_death(p)
 	_log_positions()
+	_update_devices(dt)
 	_update_projectiles(dt)
 	_update_bombs(dt)
 	_light_tnt()
-	for b in beams:
-		b["time"] -= dt
-	beams = beams.filter(func(b): return b["time"] > 0)
 
 	if state == "play" and alive_count() <= 1:
 		end_round()
@@ -241,7 +239,6 @@ func hit_player(target: Player, attacker: Player, dir: Vector2, dmg: float, base
 	var knock := base_knock * (1.0 + target.damage / Cfg.KNOCK_GROWTH)
 	target.kvx = dir.x * knock
 	target.vy = dir.y * knock
-	target.grapple = null
 	target.on_ground = false
 	target.stun = Cfg.STUN_BASE + knock * Cfg.STUN_PER_KNOCK
 	target.hurt_t = 0.15
@@ -268,55 +265,71 @@ func impact() -> bool:
 
 # --- items ---------------------------------------------------------------------------
 
-## Run an item's effect. Returns false if it couldn't be used (no charge spent).
+## Place a special block at the player's (longer-reach) target. Returns false if there's no
+## room (no charge spent). Fans blow away from whoever placed them.
 func use_item(p: Player, key: String) -> bool:
-	var c := p.centre()
-	var u := Vector2(p.aim).normalized()
-	match key:
-		"push":
-			projectiles.append({"x": c.x + p.facing * 0.5, "y": c.y, "dir": p.facing, "dist": 0.0, "owner": p.index})
+	var t := p.target(world, true, Cfg.BLOCK_REACH)
+	if not world.in_bounds(t.x, t.y) or world.get_tile(t.x, t.y) != World.EMPTY or player_in_tile(t.x, t.y):
+		sound("nope")
+		return false
+	var tile: int = Items.ITEMS[key]["tile"]
+	if tile == World.FAN_L or tile == World.FAN_R:
+		var right := t.x + 0.5 > p.centre().x or (is_equal_approx(t.x + 0.5, p.centre().x) and p.facing > 0)
+		tile = World.FAN_R if right else World.FAN_L
+	world.set_tile(t.x, t.y, tile, "place")
+	world.owners[t] = p.index
+	turret_cd[t] = Cfg.TURRET_RELOAD * 0.5
+	burst(Vector2(t) + Vector2(0.5, 0.5), Items.block_color(tile), 8, 3.0, 0.3, 3)
+	sound("place")
+	return true
+
+
+## Host only: turrets shoot and placed TNT (mines) goes off near enemies.
+func _update_devices(dt: float) -> void:
+	for pos: Vector2i in world.devices.keys():
+		if world.devices[pos] != World.TURRET:
+			continue
+		var owner: int = world.owners.get(pos, -1)
+		var cd: float = turret_cd.get(pos, 0.0) - dt
+		turret_cd[pos] = cd
+		if cd > 0:
+			continue
+		var from := Vector2(pos) + Vector2(0.5, 0.5)
+		var best: Player = null
+		for q: Player in players:
+			if not q.alive or q.index == owner:
+				continue
+			var to := q.centre() - from
+			if absf(to.y) > Cfg.TURRET_ROWS or to.length() > Cfg.TURRET_RANGE or not _clear_line(from, q.centre(), pos):
+				continue
+			if best == null or to.length() < (best.centre() - from).length():
+				best = q
+		if best:
+			var u := (best.centre() - from).normalized()
+			projectiles.append({"x": from.x + u.x * 0.7, "y": from.y + u.y * 0.7, "vx": u.x, "vy": u.y, "dist": 0.0, "owner": owner})
+			turret_cd[pos] = Cfg.TURRET_RELOAD
 			sound("push")
-		"laser":
-			for i in range(1, Cfg.LASER_LENGTH + 1):
-				var t := c + u * i
-				world.set_tile(floori(t.x), floori(t.y), World.EMPTY, "laser")
-			beams.append({"from": c, "to": c + u * Cfg.LASER_LENGTH, "owner": p.index, "time": Cfg.LASER_SHOW})
-			sound("laser")
-			shake = maxf(shake, 0.1)
-		"boost":
-			p.grapple = null
-			p.vy = -Cfg.BOOST_SPEED
-			p.jump_cut_ready = false
-			for i in 3:
-				burst(Vector2(c.x, p.y + Cfg.PLAYER_H), Color(1.0, 0.67, 0.24), 6, 6.0, 0.4, 4)
-			sound("boost")
-		"platform":
-			var row := floori(p.y + Cfg.PLAYER_H - 0.01) + 1
-			var col := floori(c.x)
-			var placed := 0
-			for tx in range(col - Cfg.PLATFORM_WIDTH / 2, col + Cfg.PLATFORM_WIDTH / 2 + 1):
-				if world.in_bounds(tx, row) and not world.solid(tx, row) and not player_in_tile(tx, row):
-					world.set_tile(tx, row, World.PLACED)
-					placed += 1
-			if placed == 0:
-				return false
-			p.vy = minf(p.vy, 0.0)
-			sound("place")
-		"grapple":
-			for i in range(1, Cfg.GRAPPLE_RANGE * 5 + 1):
-				var h := c + u * (i * 0.2)
-				if world.solid(floori(h.x), floori(h.y)):
-					p.grapple = Vector3(h.x, h.y, Cfg.GRAPPLE_TIME)
-					sound("grapple")
-					return true
-			sound("nope")
+	for pos: Vector2i in world.owners.keys():
+		if world.get_tile(pos.x, pos.y) != World.TNT:
+			continue
+		var owner: int = world.owners[pos]
+		var at := Vector2(pos) + Vector2(0.5, 0.5)
+		for q: Player in players:
+			if q.alive and q.index != owner and q.centre().distance_to(at) <= Cfg.MINE_TRIGGER:
+				world.actor = owner
+				world.set_tile(pos.x, pos.y, World.EMPTY, "trip")
+				break
+	world.actor = -1
+
+
+## No solid tile on the straight line between two points (ignoring the tile `skip`).
+func _clear_line(a: Vector2, b: Vector2, skip: Vector2i) -> bool:
+	var steps := ceili(a.distance_to(b) / 0.25)
+	for i in range(1, steps):
+		var pt := a.lerp(b, float(i) / steps)
+		var t := Vector2i(floori(pt.x), floori(pt.y))
+		if t != skip and world.solid(t.x, t.y):
 			return false
-		"bomb":
-			var v := u * Cfg.BOMB_THROW
-			if u.y <= 0:
-				v.y -= 4.0
-			bombs.append({"x": c.x, "y": c.y, "vx": v.x, "vy": v.y, "fuse": Cfg.BOMB_FUSE, "owner": p.index})
-			sound("push")
 	return true
 
 
@@ -324,11 +337,12 @@ func _update_projectiles(dt: float) -> void:
 	var keep := []
 	for pr in projectiles:
 		var step := Cfg.PUSH_SPEED * dt
-		pr["x"] += pr["dir"] * step
+		pr["x"] += pr["vx"] * step
+		pr["y"] += pr["vy"] * step
 		pr["dist"] += step
-		var owner: Player = players[pr["owner"]]
+		var owner: Player = players[pr["owner"]] if int(pr["owner"]) >= 0 else null
 		if world.solid(floori(pr["x"]), floori(pr["y"])) or pr["dist"] > Cfg.PUSH_RANGE:
-			burst(Vector2(pr["x"], pr["y"]), owner.color, 6, 4.0, 0.3, 3)
+			burst(Vector2(pr["x"], pr["y"]), Color(1.0, 0.4, 0.35), 6, 4.0, 0.3, 3)
 			continue
 		var hit: Player = null
 		for p: Player in players:
@@ -337,8 +351,8 @@ func _update_projectiles(dt: float) -> void:
 				hit = p
 				break
 		if hit:
-			var pdir: float = pr["dir"]
-			hit_player(hit, owner, Vector2(pdir, -0.45).normalized(), Cfg.PUSH_DAMAGE, Cfg.PUSH_KNOCK)
+			var side := 1.0 if pr["vx"] >= 0 else -1.0
+			hit_player(hit, owner, Vector2(side, -0.45).normalized(), Cfg.PUSH_DAMAGE, Cfg.PUSH_KNOCK)
 			continue
 		keep.append(pr)
 	projectiles = keep
@@ -368,10 +382,11 @@ func _update_bombs(dt: float) -> void:
 
 
 ## TNT that was mined, blasted or crumbled becomes a bomb stuck in place with a short fuse,
-## credited to whoever set it off (owner -1: nobody, e.g. the zone).
+## credited to whoever set it off (owner -1: nobody, e.g. the zone). A tripped mine's fuse is shorter.
 func _light_tnt() -> void:
 	for l: Array in world.lit:
-		bombs.append({"x": l[0] + 0.5, "y": l[1] + 0.5, "vx": 0.0, "vy": 0.0, "fuse": Cfg.TNT_FUSE, "owner": l[2]})
+		var fuse := Cfg.MINE_FUSE if l[3] == "trip" else Cfg.TNT_FUSE
+		bombs.append({"x": l[0] + 0.5, "y": l[1] + 0.5, "vx": 0.0, "vy": 0.0, "fuse": fuse, "owner": l[2]})
 		sound("push")
 	world.lit.clear()
 
@@ -413,13 +428,12 @@ func snapshot(ack_list: Array = []) -> Dictionary:
 	for p: Player in players:
 		ps.append([p.x, p.y, p.facing, p.aim, p.alive, p.craft_t, p.last_crafted, p.inv.duplicate(),
 			p.slots.map(func(s): return null if s == null else [s["item"], s["charges"]]),
-			p.item_cd, p.wins, p.grapple,
+			p.item_cd, p.wins,
 			p.damage, p.swing_t, p.hurt_t, p.kos, p.falls, p.dealt, p.stun,
 			p.vel_x, p.vy, p.on_ground, p.mine_target, p.mine_progress, p.mouse, p.land_t, p.aim_vec])
 	return {"tick": tick, "st": state, "tm": timer, "rd": round_no, "msg": message, "sh": shake, "hs": hitstop, "hf": hit_flash,
 		"p": ps, "ch": world.changes.duplicate(), "pr": projectiles.map(func(x): return [x["x"], x["y"], x["owner"]]),
 		"bo": bombs.map(func(x): return [x["x"], x["y"], x["fuse"], x["owner"]]),
-		"be": beams.map(func(x): return [x["from"], x["to"], x["owner"], x["time"]]),
 		"ev": events.duplicate(),
 		"zl": world.zone_left, "zr": world.zone_right, "al": world.arena_left, "ar": world.arena_right,
 		"fd": feed.duplicate(true), "rt": round_time, "ns": ns, "ack": ack}
@@ -437,6 +451,7 @@ func apply_grid(d: Dictionary) -> void:
 	world.arena_right = d["ar"]
 	world.biome = d.get("bi", "meadow")
 	world.shape = d.get("sp", "islands")
+	world.rebuild_devices()
 	world.lit.clear()                            # only the host lights TNT
 	world.broken.clear()
 	world.dirty.clear()
@@ -470,12 +485,12 @@ func apply_snapshot(d: Dictionary, skip_index := -1) -> Array:
 		var s: Array = ps[i]
 		if i != skip_index:
 			p.x = s[0]; p.y = s[1]; p.facing = s[2]; p.aim = s[3]
-			p.vel_x = s[19]; p.vy = s[20]; p.on_ground = s[21]; p.land_t = s[25]; p.aim_vec = s[26]
+			p.vel_x = s[18]; p.vy = s[19]; p.on_ground = s[20]; p.land_t = s[24]; p.aim_vec = s[25]
 		p.alive = s[4]; p.craft_t = s[5]
-		p.last_crafted = s[6]; p.inv = s[7]; p.item_cd = s[9]; p.wins = s[10]; p.grapple = s[11]
-		p.damage = s[12]; p.swing_t = s[13]; p.hurt_t = s[14]; p.kos = s[15]; p.falls = s[16]
-		p.dealt = s[17]; p.stun = s[18]
-		p.mine_target = s[22]; p.mine_progress = s[23]; p.mouse = s[24]
+		p.last_crafted = s[6]; p.inv = s[7]; p.item_cd = s[9]; p.wins = s[10]
+		p.damage = s[11]; p.swing_t = s[12]; p.hurt_t = s[13]; p.kos = s[14]; p.falls = s[15]
+		p.dealt = s[16]; p.stun = s[17]
+		p.mine_target = s[21]; p.mine_progress = s[22]; p.mouse = s[23]
 		p.slots = s[8].map(func(sl): return null if sl == null else {"item": sl[0], "charges": sl[1]})
 	for c in d["ch"]:
 		match c[0]:
@@ -483,5 +498,4 @@ func apply_snapshot(d: Dictionary, skip_index := -1) -> Array:
 			"w": world.warn(c[1], c[2])
 	projectiles = d["pr"].map(func(a): return {"x": a[0], "y": a[1], "owner": a[2]})
 	bombs = d["bo"].map(func(a): return {"x": a[0], "y": a[1], "fuse": a[2], "owner": a[3]})
-	beams = d["be"].map(func(a): return {"from": a[0], "to": a[1], "owner": a[2], "time": a[3]})
 	return d["ev"]

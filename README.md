@@ -1,6 +1,6 @@
 # Arena (working title)
 
-Fast 2D arena game. Mine blocks and ore, craft items, and survive a map that crumbles under you.
+Fast 2D arena game. Mine blocks and ore, craft special blocks, and survive a map that crumbles under you.
 Fall out of the map (bottom, left or right) and you're out. Last one standing wins the round; first to 3 wins the match.
 
 **Download (Windows / Linux):** https://github.com/Gunn1/arena-game/releases/latest
@@ -45,8 +45,8 @@ To run an always-on server that browser players can join at `wss://arena.<your-d
 
 - **Fighting:** the mine button hits a player in front of you. Each hit adds damage %; the higher it is, the farther hits launch you. Fall out within 4 s of a hit and the hitter gets the KO.
 - **The zone:** the arena crumbles from both edges toward the middle (starts after 10 s, about 90 s to close).
-- **Crafting:** one press crafts the most valuable item you can afford; your HUD shows what it'll make (or what you still need).
-- **Wall jump:** jump while touching a wall in the air; not off the same side twice in a row.
+- **Crafting:** one press crafts the most valuable special block you can afford; your HUD shows what it'll make (or what you still need). Item keys place it, up to 4.5 tiles away.
+- **Wall jump:** jump while a wall is beside your upper body in the air; not off the same side twice in a row. Just above the floor, jump waits for the landing instead.
 - **Local games:** 2/3/4 on the title screen. P2 uses the right side of the keyboard unless a controller is plugged in; P3 and P4 need controllers.
 - M = mute, N = music on/off, Esc = back.
 
@@ -64,16 +64,18 @@ Every round picks a biome and an arena shape (shown in the round banner).
 
 Any biome can have TNT: mine it (or blow it up) and it explodes a second later, credited to whoever set it off. Shapes: islands, mountain, towers with bridges, caves.
 
-## Items
+## Special blocks
 
-| Item | Cost | Uses | Does |
+Crafted into your 3 slots, placed with the item keys. Fans, magnets and bounce pads work on everyone, you included; mines and turrets ignore whoever placed them.
+
+| Block | Cost | Blocks | Does |
 |---|---|---|---|
-| Push Wand | 3 dirt | 3 | knocks a player away |
-| Rocket Boost | 1 stone, 1 copper | 3 | blast upward, works mid-air |
-| Platform | 4 dirt, 1 copper | 1 | 5 blocks under your feet |
-| Grapple | 2 stone, 1 copper | 3 | pulls you to the block you aim at |
-| Bomb | 1 stone, 1 copper, 1 crystal | 2 | blows a hole, flings players (you too) |
-| Laser | 2 stone, 1 crystal | 2 | cuts a 10-block line |
+| Fan | 3 dirt | 2 | blows players away along its row (8 tiles, stopped by blocks) |
+| Bounce Pad | 2 dirt, 1 copper | 3 | launches anyone who steps on it ~5 tiles up |
+| Steel | 3 stone, 1 copper | 4 | slow to mine, bombproof |
+| Magnet | 1 stone, 2 copper | 2 | pulls everyone within 6 tiles toward it |
+| Mine | 1 stone, 1 copper, 1 crystal | 2 | TNT that blows when an enemy gets close |
+| Turret | 2 stone, 1 copper, 1 crystal | 1 | shoots enemies within 12 tiles |
 
 Dirt and stone share a 15-block carry limit. Copper (orange specks) and crystal (cyan, deeper) are ores; every spawn gets at least 2 copper within 4 tiles and 1 crystal within 6, the same for everyone.
 

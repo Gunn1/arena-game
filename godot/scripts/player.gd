@@ -17,7 +17,7 @@ var x := 0.0                      # top-left corner, in tiles
 var y := 0.0
 var vy := 0.0
 var walk_v := 0.0                 # sideways speed from walking (accelerates toward the input)
-var kvx := 0.0                    # sideways speed from knockback, wall kicks and the grapple
+var kvx := 0.0                    # sideways speed from knockback, wall kicks and fans
 var vel_x := 0.0                  # walk_v + kvx, for visuals and snapshots
 var on_ground := false
 var land_t := 0.0                 # > 0 after a hard landing (squash)
@@ -35,7 +35,6 @@ var inv := {}
 var slots: Array = []             # null or {"item": key, "charges": n}
 var craft_t := 0.0                # > 0 while the "+Item" popup shows
 var last_crafted := ""            # item key of the last craft, for that popup
-var grapple = null                # Vector3(x, y, time left) while being pulled
 var mouse = null                  # Vector2 in tiles, or null (keyboard / controller)
 var mine_target := Vector2i(-1, -1)
 var mine_progress := 0.0          # 0..1 of breaking mine_target
@@ -90,7 +89,6 @@ func spawn(col: int, ground_row: int) -> void:
 		slots.append(null)
 	craft_t = 0.0
 	last_crafted = ""
-	grapple = null
 	mouse = null
 	mine_target = Vector2i(-1, -1)
 	mine_progress = 0.0
@@ -176,9 +174,11 @@ func centre() -> Vector2:
 	return Vector2(x + W / 2.0, y + H / 2.0)
 
 
+## A wall beside the top half of the body: -1 left, 1 right, 0 none. A ledge lip at your feet
+## doesn't count, so jumping past one doesn't turn the next jump into a wall jump.
 func wall_side(world: World) -> int:
 	var top := floori(y + 0.1)
-	var bottom := floori(y + H - 0.1)
+	var bottom := floori(y + H * 0.5)
 	for ty in range(top, bottom + 1):
 		if world.solid(floori(x - 0.05), ty):
 			return -1
@@ -188,11 +188,57 @@ func wall_side(world: World) -> int:
 	return 0
 
 
+## Falling with ground just below: a jump press should wait for the landing, not wall jump.
+func _ground_below(world: World) -> bool:
+	if vy < 0:
+		return false
+	for ty in range(floori(y + H + 0.01), floori(y + H + Cfg.WALL_GROUND_GAP) + 1):
+		for tx in range(floori(x), floori(x + W - 1e-6) + 1):
+			if world.solid(tx, ty):
+				return true
+	return false
+
+
+## Fans and magnets nearby push and pull (everyone, including whoever placed them).
+## Part of movement, so an online client predicts it exactly like the host.
+func _fields(dt: float, world: World) -> void:
+	if world.devices.is_empty():
+		return
+	var c := centre()
+	for pos: Vector2i in world.devices:
+		var tile: int = world.devices[pos]
+		if tile == World.FAN_L or tile == World.FAN_R:
+			var dir := -1 if tile == World.FAN_L else 1
+			if not (y < pos.y + 1 and y + H > pos.y):
+				continue                             # not in the fan's row
+			var off := c.x - (pos.x + 0.5)
+			if off * dir <= 0 or absf(off) > Cfg.FAN_RANGE:
+				continue
+			var blocked := false
+			for tx in range(pos.x + dir, floori(c.x), dir):
+				if world.solid(tx, pos.y):
+					blocked = true
+					break
+			if blocked:
+				continue
+			var goal := dir * Cfg.FAN_SPEED * (1.0 - absf(off) / (Cfg.FAN_RANGE + 1.0))
+			if (goal - kvx) * dir > 0:
+				kvx = move_toward(kvx, goal, Cfg.FAN_ACCEL * dt)
+		elif tile == World.MAGNET:
+			var to := Vector2(pos) + Vector2(0.5, 0.5) - c
+			var d := to.length()
+			if d < 0.8 or d > Cfg.MAGNET_RANGE:
+				continue
+			var a := Cfg.MAGNET_PULL * (1.0 - d / Cfg.MAGNET_RANGE)
+			kvx += to.x / d * a * dt
+			vy += to.y / d * a * dt
+
+
 ## The tile being aimed at. With a mouse: the tile under it if within REACH, else the best
 ## tile along the line toward it. Otherwise: beside, above, below, or diagonal from the player.
-func target(world: World, placing: bool) -> Vector2i:
+func target(world: World, placing: bool, reach := Cfg.REACH) -> Vector2i:
 	if mouse != null:
-		return _mouse_target(world, placing)
+		return _mouse_target(world, placing, reach)
 	var col := floori(x + W / 2.0)
 	var feet := floori(y + H - 0.01)
 	var head := floori(y + 0.01)
@@ -209,20 +255,20 @@ func target(world: World, placing: bool) -> Vector2i:
 	return Vector2i(side, head)
 
 
-func _mouse_target(world: World, placing: bool) -> Vector2i:
+func _mouse_target(world: World, placing: bool, reach: float) -> Vector2i:
 	var m: Vector2 = mouse
 	var c := centre()
 	var t := Vector2i(floori(m.x), floori(m.y))
-	if (Vector2(t) + Vector2(0.5, 0.5)).distance_to(c) <= Cfg.REACH:
+	if (Vector2(t) + Vector2(0.5, 0.5)).distance_to(c) <= reach:
 		return t
 	# Out of reach: walk from the centre toward the mouse. Mining takes the first block on the
 	# way; placing takes the last empty tile before a block (or the reach limit).
 	var u := (m - c).normalized()
 	var best := Vector2i(floori(c.x), floori(c.y))
-	for i in int(Cfg.REACH / 0.25) + 1:
+	for i in int(reach / 0.25) + 1:
 		var pt := c + u * (i * 0.25)
 		var tt := Vector2i(floori(pt.x), floori(pt.y))
-		if (Vector2(tt) + Vector2(0.5, 0.5)).distance_to(c) > Cfg.REACH:
+		if (Vector2(tt) + Vector2(0.5, 0.5)).distance_to(c) > reach:
 			continue
 		if world.solid(tt.x, tt.y):
 			if not placing:
@@ -254,16 +300,16 @@ func predict_step(dt: float, inp: Dictionary, game) -> void:
 ## Everything movement needs to replay inputs exactly from this point.
 func net_state() -> Array:
 	return [x, y, vy, kvx, walk_v, on_ground, coyote, wall_coyote, wall_dir, last_wall, wall_lock,
-		jump_buffer, jump_cut_ready, stun, grapple, facing, aim, land_t, bool(held.get("jump", false)), lava_cd]
+		jump_buffer, jump_cut_ready, stun, facing, aim, land_t, bool(held.get("jump", false)), lava_cd]
 
 
 func set_net_state(a: Array) -> void:
 	x = float(a[0]); y = float(a[1]); vy = float(a[2]); kvx = float(a[3]); walk_v = float(a[4])
 	on_ground = bool(a[5]); coyote = float(a[6]); wall_coyote = float(a[7]); wall_dir = int(a[8])
 	last_wall = int(a[9]); wall_lock = float(a[10]); jump_buffer = float(a[11]); jump_cut_ready = bool(a[12])
-	stun = float(a[13]); grapple = a[14]; facing = int(a[15]); aim = a[16]; land_t = float(a[17])
-	held = {"jump": bool(a[18])}
-	lava_cd = float(a[19]) if a.size() > 19 else 0.0
+	stun = float(a[13]); facing = int(a[14]); aim = a[15]; land_t = float(a[16])
+	held = {"jump": bool(a[17])}
+	lava_cd = float(a[18])
 	vel_x = walk_v + kvx
 
 
@@ -318,9 +364,8 @@ func _move_body(dt: float, dx: int, inp: Dictionary, game) -> void:
 	if lava_cd == 0.0 and touching(world, World.LAVA):
 		_burn(game)
 
-	if grapple != null and _pull(dt, world):
-		return
 	vy = minf(vy + Cfg.GRAVITY * (Cfg.FALL_GRAVITY if vy > 0 else 1.0) * dt, Cfg.MAX_FALL)
+	_fields(dt, world)
 
 	# Wall slide: holding into a wall while falling slows the fall.
 	var wall := 0 if on_ground else wall_side(world)
@@ -339,7 +384,7 @@ func _move_body(dt: float, dx: int, inp: Dictionary, game) -> void:
 			jump_buffer = 0.0
 			jump_cut_ready = true
 			game.sound("jump")
-		elif wall_coyote > 0 and wall_dir != last_wall:
+		elif wall_coyote > 0 and wall_dir != last_wall and not _ground_below(world):
 			# Wall jump: up, and kicked away from the wall.
 			vy = -Cfg.WALL_JUMP_SPEED
 			kvx = -wall_dir * Cfg.WALL_KICK
@@ -362,7 +407,7 @@ func _move_body(dt: float, dx: int, inp: Dictionary, game) -> void:
 
 	# Walking speed eases toward the input instead of snapping to it (slowly both ways on ice).
 	var grip := _grip(world) if on_ground else 1.0
-	if wall_lock > 0 or stun > 0:
+	if stun > 0 or (wall_lock > 0 and dx == last_wall):   # just after a wall jump you can't walk back into it
 		walk_v = move_toward(walk_v, 0.0, Cfg.ACCEL_AIR * 0.5 * dt)
 	elif dx != 0:
 		walk_v = move_toward(walk_v, dx * Cfg.MOVE_SPEED, (Cfg.ACCEL_GROUND * grip if on_ground else Cfg.ACCEL_AIR) * dt)
@@ -376,6 +421,9 @@ func _move_body(dt: float, dx: int, inp: Dictionary, game) -> void:
 	if on_ground and fall_speed > Cfg.LAND_SPEED:
 		land_t = 0.12
 		game.sound("land")
+	elif fall_speed > 0 and vy <= -Cfg.BOUNCE_LAUNCH:
+		game.sound("boost")                          # launched by a bounce pad
+		game.burst(Vector2(x + W / 2.0, y + H), Items.block_color(World.BOUNCE), 10, 6.0, 0.4, 4)
 	elif fall_speed > 0 and vy < 0:
 		game.sound("jump")                           # bounced off slime
 
@@ -410,39 +458,12 @@ func _burn(game) -> void:
 		# What hit_player does with no knockback, so a predicting client moves the same way.
 		damage = minf(Cfg.MAX_DAMAGE, damage + Cfg.LAVA_DAMAGE)
 		kvx = 0.0
-		grapple = null
 		stun = Cfg.STUN_BASE
 		hurt_t = 0.15
 	vy = -Cfg.LAVA_LAUNCH
 	on_ground = false
 	jump_cut_ready = false
 	game.burst(Vector2(x + W / 2.0, y + H), Color(1.0, 0.5, 0.12), 14, 7.0, 0.5, 4, 5.0)
-
-
-## Grapple: fly straight at the hook point. Returns true while still being pulled.
-func _pull(dt: float, world: World) -> bool:
-	var hook := Vector2(grapple.x, grapple.y)
-	var c := centre()
-	var dist := c.distance_to(hook)
-	var hooked := world.solid(floori(hook.x), floori(hook.y))
-	if dist < 1.0 or grapple.z <= 0 or not hooked:
-		grapple = null
-		kvx *= 0.4
-		vy = minf(vy, -4.0)                       # a little hop at the end
-		return false
-	grapple = Vector3(hook.x, hook.y, grapple.z - dt)
-	walk_v = 0.0
-	jump_cut_ready = false
-	var u := (hook - c) / dist
-	kvx = u.x * Cfg.GRAPPLE_SPEED
-	vy = u.y * Cfg.GRAPPLE_SPEED
-	var before := Vector2(x, y)
-	move(world, kvx * dt, 0.0)
-	on_ground = false
-	move(world, 0.0, vy * dt)
-	if Vector2(x, y).distance_to(before) < 0.01:
-		grapple = null                            # stuck on something: let go
-	return true
 
 
 func _use_hands(dt: float, inp: Dictionary, game) -> void:
@@ -462,7 +483,7 @@ func _use_hands(dt: float, inp: Dictionary, game) -> void:
 	for i in Cfg.SLOTS:
 		var slot = slots[i]
 		if pressed(inp, "item%d" % (i + 1)) and slot != null and item_cd == 0.0 and game.use_item(self, slot["item"]):
-			item_cd = Items.ITEMS[slot["item"]]["cooldown"]
+			item_cd = Cfg.BLOCK_COOLDOWN
 			slot["charges"] -= 1
 			if slot["charges"] <= 0:
 				slots[i] = null
@@ -535,9 +556,14 @@ func move(world: World, mx: float, my: float) -> void:
 		var floor_row: int = hits.map(func(t): return t.y).min()
 		y = floor_row - H
 		var bouncy := false
+		var pad := false
 		for t: Vector2i in hits:
 			bouncy = bouncy or (t.y == floor_row and world.get_tile(t.x, t.y) == World.SLIME)
-		if bouncy and vy > Cfg.SLIME_MIN:
+			pad = pad or (t.y == floor_row and world.get_tile(t.x, t.y) == World.BOUNCE)
+		if pad:
+			vy = -Cfg.BOUNCE_LAUNCH                    # a bounce pad launches you, even just stepping on it
+			jump_cut_ready = false
+		elif bouncy and vy > Cfg.SLIME_MIN:
 			vy = -vy * Cfg.SLIME_BOUNCE                # slime throws you back up instead of landing
 		else:
 			vy = 0.0

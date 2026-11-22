@@ -3,7 +3,9 @@ class_name World
 extends RefCounted
 
 # New types go at the end so the numbers (sent online, used by Cfg.MINE_TIME) never change.
-enum { EMPTY, DIRT, STONE, PLACED, COPPER, CRYSTAL, SAND, ICE, SLIME, LAVA, TNT }
+enum { EMPTY, DIRT, STONE, PLACED, COPPER, CRYSTAL, SAND, ICE, SLIME, LAVA, TNT, STEEL, FAN_L, FAN_R, MAGNET, TURRET, BOUNCE }
+# Special blocks players craft and place, with an effect around them. Kept in `devices`.
+const DEVICES := [FAN_L, FAN_R, MAGNET, TURRET, BOUNCE]
 const DROPS := {DIRT: "dirt", PLACED: "dirt", STONE: "stone", COPPER: "copper", CRYSTAL: "crystal",
 	SAND: "dirt", ICE: "stone", SLIME: "dirt"}
 const ORE_TILES := {"copper": COPPER, "crystal": CRYSTAL}
@@ -30,9 +32,11 @@ var version := 0                  # bumps every new map
 var biome := "meadow"             # one of Cfg.BIOMES: colours and special blocks
 var shape := "islands"            # one of Cfg.SHAPES: how the terrain is laid out
 var actor := -1                   # player index breaking tiles right now (GameSim sets it), for TNT credit
-var lit: Array = []               # [x, y, actor] TNT set off since GameSim last drained it
+var lit: Array = []               # [x, y, actor, cause] TNT set off since GameSim last drained it
 var occupied := Callable()        # (x, y) -> bool: a player is in that tile (sand won't fall into it)
 var sand_t := 0.0
+var devices := {}                 # Vector2i -> tile, for every fan, magnet, turret and bounce pad
+var owners := {}                  # host: Vector2i -> player index that placed a special block there
 var _players := 2                 # while generating
 
 
@@ -60,10 +64,17 @@ func set_tile(x: int, y: int, tile: int, cause := "mine") -> void:
 	var old := grid[y * COLS + x]
 	if old == tile:
 		return
-	if old == LAVA and tile == EMPTY and cause in ["mine", "bomb", "laser"]:
+	if old == LAVA and tile == EMPTY and cause in ["mine", "bomb"]:
 		return                                       # lava can't be dug or blasted away (the zone still takes it)
+	if old == STEEL and cause == "bomb":
+		return                                       # steel is bombproof
 	grid[y * COLS + x] = tile
 	var pos := Vector2i(x, y)
+	owners.erase(pos)
+	if tile in DEVICES:
+		devices[pos] = tile
+	else:
+		devices.erase(pos)
 	if record:
 		changes.append(["t", x, y, tile, cause])
 	if tile != EMPTY and zone_started() and (x < next_left or x > next_right):
@@ -73,7 +84,7 @@ func set_tile(x: int, y: int, tile: int, cause := "mine") -> void:
 			broken.append([x, y, old, cause])
 		warnings.erase(pos)
 		if old == TNT:
-			lit.append([x, y, actor])
+			lit.append([x, y, actor, cause])
 	dirty.append(pos)
 
 
@@ -84,6 +95,15 @@ func break_tile(x: int, y: int) -> int:
 		return -1
 	set_tile(x, y, EMPTY, "mine")
 	return tile
+
+
+## After the whole grid is replaced: find every device again.
+func rebuild_devices() -> void:
+	devices.clear()
+	owners.clear()
+	for i in grid.size():
+		if grid[i] in DEVICES:
+			devices[Vector2i(i % COLS, i / COLS)] = grid[i]
 
 
 func warn(x: int, y: int) -> void:
@@ -197,6 +217,7 @@ func generate(seed_value: int, players: int, force_biome := "", force_shape := "
 	_dress(grid)
 	warnings.clear()
 	lit.clear()
+	rebuild_devices()
 	sand_t = 0.0
 	actor = -1
 	broken.clear()
