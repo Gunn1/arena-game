@@ -97,6 +97,10 @@ var my_swing_t := 0.0
 var my_swing_cd := 0.0
 var my_swing_until := 0.0         # until then my swing_t is mine, not the host's, and its swing sound is skipped
 var mine_was_held := false
+var my_hit_until := 0.0           # client: I showed my own hit already; skip the host's copy until then
+var local_shake := 0.0            # client: shake from my own predicted hit (the host's comes in sim.shake)
+var hit_fx: Array = []            # [pos in tiles, damage, color, age]: impact spark and a rising "+N%"
+const HIT_FX_LIFE := 0.6
 var lobby_size := 0
 var dedicated := false            # client: the host is a dedicated server
 var sent_version := -1
@@ -1099,7 +1103,11 @@ func _process(delta: float) -> void:
 			p[1].y += p[5] * delta
 			p[2] -= delta
 		particles = particles.filter(func(p): return p[2] > 0)
-		var power := int(10 * sim.shake)
+		for h in hit_fx:
+			h[3] += delta
+		hit_fx = hit_fx.filter(func(h): return h[3] < HIT_FX_LIFE)
+		local_shake = maxf(0.0, local_shake - delta)
+		var power := int(10 * maxf(sim.shake, local_shake))
 		world_root.position = Vector2(randi_range(-power, power), HUD_H + randi_range(-power, power))
 		var hide := mode != "server" and _my_player() != null
 		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN if hide and sim.state != "match_over" else Input.MOUSE_MODE_VISIBLE
@@ -1128,6 +1136,17 @@ func _predict_swing(me: Player, input: Dictionary) -> void:
 		my_swing_cd = Cfg.SWING_COOLDOWN
 		my_swing_until = time + 0.8
 		sfx.play("swing")
+		# Who it hits, judged against where I see them (the host rewinds to that view too).
+		me.swing_dir = me.aim_vec
+		for o: Player in sim.players:
+			if o == me or not o.alive or not GameSim.swing_reaches(me.centre(), me.aim_vec, draw_pos(o)):
+				continue
+			var rel := _draw_centre(o) - me.centre()
+			me.swing_dir = rel.normalized() if rel.length() > 0.01 else me.swing_dir
+			hit_fx.append([_draw_centre(o), Cfg.SWING_DAMAGE, me.color, 0.0])
+			sfx.play("hit")
+			local_shake = 0.15
+			my_hit_until = time + 0.8
 	mine_was_held = held
 	if time < my_swing_until:
 		me.swing_t = my_swing_t
@@ -1137,6 +1156,12 @@ func _play_events(events: Array) -> void:
 	for e in events:
 		if e[0] == "snd" and mode == "client" and e.size() > 3 and e[3] == my_index and e[1] == "swing" and time < my_swing_until:
 			continue                               # already played when I clicked
+		if mode == "client" and time < my_hit_until and ((e[0] == "hit" and e[4] == my_index)
+				or (e[0] == "snd" and e.size() > 3 and e[3] == my_index and e[1] in ["hit", "hit_heavy"])):
+			continue                               # my hit: already shown when I clicked
+		if e[0] == "hit":
+			hit_fx.append([e[1], e[2], e[3], 0.0])
+			continue
 		if e[0] == "snd":
 			sfx.play(e[1], e[2])
 		elif e[0] == "pt":
@@ -1286,6 +1311,24 @@ func _draw_overlay() -> void:
 		overlay.draw_arc(pos, 7.0, 0, TAU, 16, _owner_color(b["owner"]), 2.0)
 		if int(b["fuse"] * (12 if b["fuse"] < 0.5 else 5)) % 2:
 			overlay.draw_circle(pos + Vector2(5, -6), 3.0, Color(1.0, 0.86, 0.35))
+	for h in hit_fx:
+		var age: float = h[3]
+		var at: Vector2 = h[0] * CELL
+		var col: Color = h[2]
+		if age < 0.12:
+			# Impact spark: a white star that pops out, then a coloured ring.
+			var k := age / 0.12
+			for i in 8:
+				var d := Vector2.from_angle(i * TAU / 8.0 + 0.3)
+				var inner := 4.0 + 10.0 * k
+				var outer := 10.0 + 18.0 * k * (1.0 if i % 2 == 0 else 0.6)
+				overlay.draw_line(at + d * inner, at + d * outer, Color(1, 1, 1, 1.0 - k * 0.5), 3.0)
+			overlay.draw_arc(at, 6.0 + 16.0 * k, 0, TAU, 20, Color(col, 1.0 - k), 3.0)
+		var fade := 1.0 - clampf((age - 0.3) / (HIT_FX_LIFE - 0.3), 0.0, 1.0)
+		var pos := at + Vector2(12, -44.0 - 40.0 * age)       # above the name tag
+		var label := "+%d%%" % int(round(float(h[1])))
+		text(overlay, label, pos + Vector2(1, 1), 18, Color(0, 0, 0, 0.7 * fade), true)
+		text(overlay, label, pos, 18, Color(col.lightened(0.4), fade), true)
 	for p in particles:
 		var fade := clampf(p[2] / 0.25, 0.0, 1.0)
 		var col: Color = p[3]
@@ -1343,7 +1386,7 @@ func _draw_player(p: Player) -> void:
 	_draw_character(p, at)
 	if p.swing_t > 0:
 		var c := _draw_centre(p) * CELL
-		var a := p.aim_vec.angle()                # the swing box follows the exact aim
+		var a := p.swing_dir.angle()              # toward who it hit (else where you aimed)
 		var alpha := clampf(p.swing_t / Cfg.SWING_SHOW, 0.0, 1.0)
 		var r := 1.3 * CELL
 		overlay.draw_arc(c, r, a - 0.9, a + 0.9, 16, Color(Color.WHITE, alpha), 4.0)

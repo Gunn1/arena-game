@@ -185,17 +185,30 @@ func player_in_tile(tx: int, ty: int) -> bool:
 
 # --- fighting ------------------------------------------------------------------------
 
-## Alive players (not p) inside the swing box in front of p, along the exact (unsnapped) aim.
+## Alive players (not p) within SWING_RADIUS of p, roughly where p aims (aim assist: a wide cone).
 ## While a remote player's input is applied (view >= 0), the others are where that player saw them.
 func swing_targets(p: Player) -> Array:
-	var c := p.centre() + p.aim_vec * Cfg.SWING_REACH
-	var box := Rect2(c - Cfg.SWING_BOX / 2.0, Cfg.SWING_BOX)
+	var c := p.centre()
 	var out := []
 	for o: Player in players:
 		var at := Vector2(o.x, o.y) if view < 0.0 else pos_at(o.index, view)
-		if o.alive and o != p and box.intersects(Rect2(at, Vector2(Cfg.PLAYER_W, Cfg.PLAYER_H))):
+		if o.alive and o != p and swing_reaches(c, p.aim_vec, at):
 			out.append(o)
 	return out
+
+
+## Does a swing from centre c, aimed along aim, reach a body whose top-left is at? It must be within
+## SWING_RADIUS, and its nearest point or its middle within SWING_ASSIST degrees of the aim.
+static func swing_reaches(c: Vector2, aim: Vector2, at: Vector2) -> bool:
+	var nearest := Vector2(clampf(c.x, at.x, at.x + Cfg.PLAYER_W), clampf(c.y, at.y, at.y + Cfg.PLAYER_H))
+	var to_near := nearest - c
+	if to_near.length() > Cfg.SWING_RADIUS:
+		return false
+	if to_near.length() < 0.05:
+		return true                              # overlapping you
+	var cone := cos(deg_to_rad(Cfg.SWING_ASSIST))
+	var to_mid := at + Vector2(Cfg.PLAYER_W, Cfg.PLAYER_H) / 2.0 - c
+	return to_near.normalized().dot(aim) >= cone or to_mid.normalized().dot(aim) >= cone
 
 
 ## Host: remember where everyone is this tick, for rewinding remote swings.
@@ -223,19 +236,23 @@ func pos_at(i: int, at: float) -> Vector2:
 	return now
 
 
-## Launch direction for a swing aimed at `aim`: down spikes, sideways hits lift a bit.
-static func knock_dir(aim: Vector2) -> Vector2:
-	if aim.y > 0:
-		return aim.normalized()
-	if aim.x == 0:
+## Launch direction for a victim at `rel` from the swinger: straight below is a spike, straight
+## above goes up, anything else flies away sideways in an arc (about 37 degrees up).
+static func knock_dir(rel: Vector2, facing: int) -> Vector2:
+	if absf(rel.x) < 0.5 and rel.y > 0.8:
+		return Vector2(0, 1)
+	if absf(rel.x) < 0.5 and rel.y < -0.8:
 		return Vector2(0, -1)
-	return Vector2(aim.x, minf(aim.y, 0.0) - 0.75).normalized()   # about 37 degrees up: a real arc, not a slide
+	var side := signf(rel.x) if absf(rel.x) > 0.05 else float(facing)
+	return Vector2(side, -0.75).normalized()
 
 
 func melee(p: Player, victims: Array) -> void:
-	var dir := knock_dir(Vector2(p.aim))
+	p.swing_dir = p.aim_vec
 	for v: Player in victims:
-		hit_player(v, p, dir, Cfg.SWING_DAMAGE, Cfg.SWING_KNOCK)
+		var rel := v.centre() - p.centre()
+		p.swing_dir = rel.normalized() if rel.length() > 0.01 else p.swing_dir
+		hit_player(v, p, knock_dir(rel, p.facing), Cfg.SWING_DAMAGE, Cfg.SWING_KNOCK)
 	p.swing_t = Cfg.SWING_SHOW
 	sound("swing", 0.0, p.index)
 
@@ -255,14 +272,16 @@ func hit_player(target: Player, attacker: Player, dir: Vector2, dmg: float, base
 		target.last_hit_at = round_time
 		attacker.dealt += dmg
 	var col: Color = attacker.color if attacker != null else Color.WHITE
+	var by := attacker.index if attacker != null else -1
 	burst(target.centre(), col, clampi(int(knock), 6, 30), 6.0 + knock * 0.3, 0.4, 4)
-	shake = maxf(shake, clampf(knock / 100.0, 0.06, 0.3))
+	events.append(["hit", target.centre(), dmg, col, by])     # spark + "+N%" (main.gd)
+	shake = maxf(shake, clampf(knock / 60.0, 0.12, 0.35))
 	var impact_time := minf(Cfg.HITSTOP_MAX, Cfg.HITSTOP_BASE + knock * Cfg.HITSTOP_PER_KNOCK)
 	if freeze_on_hit:
 		hitstop = maxf(hitstop, impact_time)
 	else:
 		hit_flash = maxf(hit_flash, impact_time)
-	sound("hit_heavy" if knock >= 20 else "hit")
+	sound("hit_heavy" if knock >= 20 else "hit", 0.0, by)
 
 
 ## Draw the hit impact now (enlarged hit player, white flash): during hitstop, or hit_flash online.
@@ -497,7 +516,7 @@ func snapshot(ack_list: Array = []) -> Dictionary:
 			p.slots.map(func(s): return null if s == null else [s["item"], s["charges"]]),
 			p.item_cd, p.wins,
 			p.damage, p.swing_t, p.hurt_t, p.kos, p.falls, p.dealt, p.stun,
-			p.vel_x, p.vy, p.on_ground, p.mine_target, p.mine_progress, p.mouse, p.land_t, p.aim_vec])
+			p.vel_x, p.vy, p.on_ground, p.mine_target, p.mine_progress, p.mouse, p.land_t, p.aim_vec, p.swing_dir])
 	return {"tick": tick, "st": state, "tm": timer, "rd": round_no, "msg": message, "sh": shake, "hs": hitstop, "hf": hit_flash,
 		"p": ps, "ch": world.changes.duplicate(), "pr": projectiles.map(func(x): return [x["x"], x["y"], x["owner"]]),
 		"bo": bombs.map(func(x): return [x["x"], x["y"], x["fuse"], x["owner"]]),
@@ -558,6 +577,8 @@ func apply_snapshot(d: Dictionary, skip_index := -1) -> Array:
 		p.damage = s[11]; p.swing_t = s[12]; p.hurt_t = s[13]; p.kos = s[14]; p.falls = s[15]
 		p.dealt = s[16]; p.stun = s[17]
 		p.mine_target = s[21]; p.mine_progress = s[22]; p.mouse = s[23]
+		if i != skip_index:
+			p.swing_dir = s[26]
 		p.slots = s[8].map(func(sl): return null if sl == null else {"item": sl[0], "charges": sl[1]})
 	for c in d["ch"]:
 		match c[0]:

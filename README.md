@@ -43,7 +43,7 @@ To run an always-on server that browser players can join at `wss://arena.<your-d
 | Local P2 | J / L | I | K = down | hold U | O | 7 / 8 / 9 | H |
 | Controller | left stick / d-pad | A | right stick | hold RT | LT | X / Y / B | RB |
 
-- **Fighting:** the mine button hits a player in front of you. Each hit adds damage %; the higher it is, the farther hits launch you. Fall out within 4 s of a hit and the hitter gets the KO.
+- **Fighting:** click to swing. Aim assist: it hits anyone within reach roughly where you aim (70° either way), and a click during cooldown still swings when it's ready. Each hit adds damage %; the higher it is, the farther hits launch you. Fall out within 4 s of a hit and the hitter gets the KO.
 - **The zone:** the arena crumbles from both edges toward the middle (starts after 10 s, about 90 s to close).
 - **Crafting:** tap craft to make the most valuable special block you can afford (your HUD shows which). Hold craft to open the menu: pick with the mouse, wheel, or left/right, and let go to craft it. Item keys place blocks up to 4.5 tiles away.
 - **Wall jump:** jump while a wall is beside your upper body in the air; not off the same side twice in a row. Just above the floor, jump waits for the landing instead.

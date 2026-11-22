@@ -980,9 +980,9 @@ func test_fighting() -> void:
 	var spike := fight_sim(0.0, 15.1)
 	var sp: Player = spike.players[0]
 	var sq: Player = spike.players[1]
-	spike.update(Cfg.DT, [with({"mine": true, "down": true}), IDLE])
-	check(sq.last_hit_by == 0, "a down swing hits the player beside you")
-	check(sp.mine_progress == 0.0 and spike.world.solid(15, 20), "a down swing that hits doesn't mine the floor (%.2f)"
+	spike.update(Cfg.DT, [with({"mine": true, "down": true, "right": true}), IDLE])
+	check(sq.last_hit_by == 0, "a down-right swing hits the player beside you (aim assist)")
+	check(sp.mine_progress == 0.0 and spike.world.solid(16, 20), "a down-right swing that hits doesn't mine the floor (%.2f)"
 		% sp.mine_progress)
 
 	# A hit at 0% is an arc, not a slide along the floor.
@@ -1005,6 +1005,17 @@ func test_fighting() -> void:
 	check(p.swing_t == 0.0, "holding at air doesn't keep swinging (it mines)")
 	check(p.mine_progress > 0 or sim.world.block_count() < 40, "holding mines the block you aim at")
 
+	# A click just before the cooldown ends still swings when it does (no lost clicks).
+	sim = floor_sim()
+	p = sim.players[0]
+	sim.update(Cfg.DT, [with({"mine": true, "down": true}), IDLE])
+	var cd_frames := ceili(Cfg.SWING_COOLDOWN / Cfg.DT)
+	run(sim, cd_frames - 4)
+	sim.update(Cfg.DT, [with({"mine": true, "down": true}), IDLE])
+	check(p.swing_t < Cfg.SWING_SHOW - 0.001, "a click during cooldown doesn't swing yet")
+	run(sim, 5)
+	check(p.swing_t > 0, "...but swings as soon as the cooldown ends")
+
 	# Stunned: no swinging back.
 	sim = fight_sim(0.0, 15.1)
 	p = sim.players[0]
@@ -1012,6 +1023,16 @@ func test_fighting() -> void:
 	p.stun = 0.3
 	sim.update(Cfg.DT, [with({"mine": true}), IDLE])
 	check(q.damage == 0.0 and p.swing_t == 0.0, "a stunned player can't swing")
+
+	# Aim assist: a wide cone around the aim, not everywhere, and not past SWING_RADIUS.
+	var c := Vector2(10, 10)
+	var body := Vector2(Cfg.PLAYER_W, Cfg.PLAYER_H)
+	check(GameSim.swing_reaches(c, Vector2(1, 0), c + Vector2(0.6, -0.8)), "aimed right: hits someone right beside you")
+	check(GameSim.swing_reaches(c, Vector2(1, -1).normalized(), c + Vector2(0.6, -0.8)), "aimed up-right: still hits them (assist)")
+	check(GameSim.swing_reaches(c, Vector2(0, -1), c + Vector2(0.6, -2.0)), "aimed up: hits someone above and a bit to the side")
+	check(not GameSim.swing_reaches(c, Vector2(-1, 0), c + Vector2(0.6, -0.8)), "aimed left: misses someone on your right")
+	check(not GameSim.swing_reaches(c, Vector2(1, 0), c + Vector2(1.8, -0.8)), "too far: misses")
+	check(GameSim.swing_reaches(c, Vector2(-1, 0), c - body / 2.0), "someone overlapping you is always hit")
 
 	# Knockback grows with damage %.
 	sim = fight_sim(112.0, 15.1)

@@ -86,8 +86,9 @@ const SWING_COOLDOWN := 0.3
 const SWING_SHOW := 0.12          # how long a swing is drawn
 const SWING_DAMAGE := 8.0
 const SWING_KNOCK := 11.0         # knockback speed at 0%
-const SWING_REACH := 1.1          # hit box sits this far in front of you (along the exact aim)...
-const SWING_BOX := Vector2(1.8, 1.9)   # ...and is this big
+const SWING_RADIUS := 1.6         # a swing reaches bodies this close to your centre...
+const SWING_ASSIST := 70.0        # ...within this many degrees either side of where you aim (aim assist)
+const SWING_BUFFER := 0.15        # a click during cooldown or stun still swings if it comes free this soon
 const KNOCK_GROWTH := 60.0        # knockback = base * (1 + damage / KNOCK_GROWTH): 2x at 60%, 3x at 120%
 const MAX_DAMAGE := 300.0
 const STUN_BASE := 0.1            # after a hit you can't walk for STUN_BASE + knock * STUN_PER_KNOCK seconds
@@ -95,7 +96,7 @@ const STUN_PER_KNOCK := 0.015
 const STUN_DECAY := 1.2           # knockback fades this slowly while stunned (KNOCK_DECAY otherwise)
 const STUN_DRIFT := 0.35          # while stunned you can still steer this fraction of air control, at half speed
 const KILL_CREDIT := 4.0          # fall within this many seconds of a hit and the hitter gets the KO
-const HITSTOP_BASE := 0.04        # the whole game freezes briefly on a hit: base + knock * per, capped
+const HITSTOP_BASE := 0.06        # the whole game freezes briefly on a hit: base + knock * per, capped
 const HITSTOP_PER_KNOCK := 0.003
 const HITSTOP_MAX := 0.14
 
@@ -145,7 +146,7 @@ const PUBLIC_SERVER := "arena.tylergunn.me"   # "Play online" on the title scree
 # Game version. Online, the host and every player must match exactly: it's sent as the
 # WebSocket subprotocol, so a different version can't even connect (no silent breakage).
 # The release workflow checks that the git tag (vX.Y.Z) matches this.
-const GAME_VERSION := "0.8.0"
+const GAME_VERSION := "0.8.1"
 const NET_PROTOCOL := "arena-" + GAME_VERSION
 
 const PLAYER_COLORS := [Color(1.0, 0.42, 0.42), Color(0.31, 0.66, 1.0), Color(1.0, 0.82, 0.25), Color(0.72, 0.48, 1.0)]

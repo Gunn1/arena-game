@@ -53,6 +53,8 @@ var damage := 0.0                 # Smash-style %: more damage = hits launch you
 var stun := 0.0                   # can't walk while > 0 (you're flying from a hit)
 var swing_cd := 0.0
 var swing_t := 0.0                # > 0 while the swing is drawn
+var swing_dir := Vector2(1, 0)    # which way the last swing went (toward who it hit), for drawing
+var swing_buffer := 0.0           # > 0: a click is waiting to swing
 var hurt_t := 0.0                 # > 0 while the hit flash is drawn
 var last_hit_by := -1             # player index, for KO credit
 var last_hit_at := -100.0         # round time of that hit
@@ -110,6 +112,7 @@ func spawn(col: int, ground_row: int) -> void:
 	stun = 0.0
 	swing_cd = 0.0
 	swing_t = 0.0
+	swing_buffer = 0.0
 	hurt_t = 0.0
 	last_hit_by = -1
 	last_hit_at = -100.0
@@ -609,17 +612,21 @@ func _use_hands(dt: float, inp: Dictionary, game) -> void:
 
 	# One button. A press always swings (a hit, or a visible miss); holding mines the block you
 	# aim at, swinging again whenever someone is in front of you. No swinging while stunned.
-	if inp.get("mine", false):
-		var swung := false
-		if swing_cd == 0.0 and stun == 0.0:
-			var victims: Array = game.swing_targets(self)
-			if victims or pressed(inp, "mine"):
-				game.melee(self, victims)
-				swing_cd = Cfg.SWING_COOLDOWN
-				swung = true
-		if not swung:
-			_mine(dt, world, game)
-	else:
+	swing_buffer = maxf(0.0, swing_buffer - dt)
+	if pressed(inp, "mine"):
+		swing_buffer = Cfg.SWING_BUFFER
+	var holding: bool = inp.get("mine", false)
+	var swung := false
+	if (holding or swing_buffer > 0) and swing_cd == 0.0 and stun == 0.0:
+		var victims: Array = game.swing_targets(self)
+		if victims or swing_buffer > 0:
+			game.melee(self, victims)
+			swing_cd = Cfg.SWING_COOLDOWN
+			swing_buffer = 0.0
+			swung = true
+	if holding and not swung:
+		_mine(dt, world, game)
+	elif not holding:
 		_stop_mining()
 	if inp.get("place", false) and place_cd == 0.0 and blocks() > 0:
 		var t := target(world, true)
