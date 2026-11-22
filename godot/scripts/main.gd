@@ -433,7 +433,11 @@ func _refresh_tiles() -> void:
 	if w.biome != shown_biome:
 		shown_biome = w.biome
 		look = BIOME_LOOK.get(w.biome, BIOME_LOOK["meadow"])
+		var a0 := Time.get_ticks_usec()
 		tiles.tile_set = _build_tileset()
+		var a_ms := (Time.get_ticks_usec() - a0) / 1000
+		if a_ms > 30:
+			print("[perf] tile atlas rebuild took %d ms" % a_ms)
 		shown_version = -1
 	if w.version != shown_version:
 		shown_version = w.version
@@ -1008,6 +1012,8 @@ func _physics_process(_delta: float) -> void:
 
 func _process(delta: float) -> void:
 	time += delta
+	if delta > 0.1 and time > 2.0:
+		print("[perf] long frame %d ms (screen %s, state %s)" % [int(delta * 1000), screen, sim.state])
 	if music:
 		music.play("battle" if screen == "game" else "menu")
 		var w := sim.world   # intensity = how far the zone has closed in

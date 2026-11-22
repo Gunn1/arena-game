@@ -66,7 +66,11 @@ func start_match(count: int) -> void:
 
 func new_round() -> void:
 	round_no += 1
+	var g0 := Time.get_ticks_usec()
 	world.generate(rng.randi(), players.size())
+	var g_ms := (Time.get_ticks_usec() - g0) / 1000
+	if g_ms > 30:
+		print("[perf] map generation took %d ms" % g_ms)
 	for i in players.size():
 		players[i].spawn(world.spawns[i].x, world.spawns[i].y)
 	projectiles.clear()

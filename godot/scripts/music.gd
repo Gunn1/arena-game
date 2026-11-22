@@ -69,8 +69,9 @@ class Track:
 	var streams: Array[AudioStreamWAV] = []
 	var ready := false
 	var player: AudioStreamPlayer
-	var sync: AudioStreamSynchronized   # battle: base + hype layers, sample-locked
+	var hype: AudioStreamPlayer          # battle only: the extra layer, started together with player
 	var gain := 0.0
+	var paused := false                  # last value given to the players (see _process)
 
 
 var enabled := true
@@ -128,21 +129,39 @@ func _process(delta: float) -> void:
 		if not tr.ready:
 			continue
 		var p := tr.player
-		p.stream_paused = muted
+		# Only touch pause/volume when they change: in the web build every stream_paused write
+		# re-creates the whole looping buffer in the browser's audio engine (it froze the game).
+		if muted != tr.paused:
+			tr.paused = muted
+			p.stream_paused = muted
+			if tr.hype:
+				tr.hype.stream_paused = muted
 		if muted:
 			continue
 		var target := 1.0 if enabled and name == _cur else 0.0
 		if target > 0.0 and not p.playing:
 			tr.gain = 0.0
 			p.play()
+			if tr.hype:
+				tr.hype.play()                  # same frame, same length: the layers stay together
 		tr.gain = move_toward(tr.gain, target, delta / FADE_TIME)
 		if tr.gain <= 0.0:
 			if p.playing:
 				p.stop()
+				if tr.hype:
+					tr.hype.stop()
 			continue
-		p.volume_db = VOLUME_DB + linear_to_db(tr.gain)
-		if tr.sync:
-			tr.sync.set_sync_stream_volume(1, linear_to_db(maxf(0.001, clampf(_hype / 0.6, 0.0, 1.0))))
+		_set_volume(p, VOLUME_DB + linear_to_db(tr.gain))
+		if tr.hype:
+			var h := clampf(_hype / 0.6, 0.0, 1.0)
+			_set_volume(tr.hype, VOLUME_DB + linear_to_db(tr.gain) + linear_to_db(maxf(0.001, h)))
+
+
+## Change a player's volume only if it moved noticeably (each change is a call into the
+## browser's audio engine on the web).
+func _set_volume(p: AudioStreamPlayer, db: float) -> void:
+	if absf(p.volume_db - db) > 0.25:
+		p.volume_db = db
 
 
 ## Spend up to budget_usec rendering; the requested track first. Returns false once all are done.
@@ -156,7 +175,11 @@ func render(budget_usec: int) -> bool:
 		if tr == null:
 			more = false
 			break
+		var s0 := Time.get_ticks_usec()
 		_step(tr)
+		var took := Time.get_ticks_usec() - s0
+		if took > 30000:
+			print("[perf] music step phase %d took %d ms" % [tr.phase, took / 1000])
 	render_usec += Time.get_ticks_usec() - t0
 	return more
 
@@ -271,20 +294,19 @@ func _step_note(tr: Track) -> void:
 
 
 func _finish(tr: Track) -> void:
+	# Plain looping WAVs on plain players: the web build plays these through the browser's audio
+	# engine ("sample" playback), which doesn't support AudioStreamSynchronized.
 	tr.player = AudioStreamPlayer.new()
 	tr.player.volume_db = -80.0
-	if tr.out.size() == 2:
-		tr.sync = AudioStreamSynchronized.new()
-		tr.sync.stream_count = 2
-		tr.sync.set_sync_stream(0, tr.streams[0])
-		tr.sync.set_sync_stream(1, tr.streams[1])
-		tr.sync.set_sync_stream_volume(1, -60.0)
-		tr.player.stream = tr.sync
-	else:
-		tr.player.stream = tr.streams[0]
+	tr.player.stream = tr.streams[0]
+	add_child(tr.player)
+	if tr.streams.size() == 2:
+		tr.hype = AudioStreamPlayer.new()
+		tr.hype.volume_db = -80.0
+		tr.hype.stream = tr.streams[1]
+		add_child(tr.hype)
 	tr.out.clear()
 	tr.streams.clear()
-	add_child(tr.player)
 	tr.ready = true
 
 
