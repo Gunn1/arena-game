@@ -55,6 +55,7 @@ var swing_cd := 0.0
 var swing_t := 0.0                # > 0 while the swing is drawn
 var swing_dir := Vector2(1, 0)    # which way the last swing went (toward who it hit), for drawing
 var swing_buffer := 0.0           # > 0: a click is waiting to swing
+var hit_lock := 0.0               # > 0: just got hit, can't swing yet
 var hurt_t := 0.0                 # > 0 while the hit flash is drawn
 var last_hit_by := -1             # player index, for KO credit
 var last_hit_at := -100.0         # round time of that hit
@@ -113,6 +114,7 @@ func spawn(col: int, ground_row: int) -> void:
 	swing_cd = 0.0
 	swing_t = 0.0
 	swing_buffer = 0.0
+	hit_lock = 0.0
 	hurt_t = 0.0
 	last_hit_by = -1
 	last_hit_at = -100.0
@@ -349,6 +351,7 @@ func _step_body(dt: float, inp: Dictionary, game) -> void:
 	place_cd = maxf(0.0, place_cd - dt)
 	item_cd = maxf(0.0, item_cd - dt)
 	swing_cd = maxf(0.0, swing_cd - dt)
+	hit_lock = maxf(0.0, hit_lock - dt)
 	swing_t = maxf(0.0, swing_t - dt)
 	hurt_t = maxf(0.0, hurt_t - dt)
 	craft_t = maxf(0.0, craft_t - dt)
@@ -611,13 +614,13 @@ func _use_hands(dt: float, inp: Dictionary, game) -> void:
 				slots[i] = null
 
 	# One button. A press always swings (a hit, or a visible miss); holding mines the block you
-	# aim at, swinging again whenever someone is in front of you. No swinging while stunned.
+	# aim at, swinging again whenever someone is in front of you. Just after being hit, a short lock.
 	swing_buffer = maxf(0.0, swing_buffer - dt)
 	if pressed(inp, "mine"):
 		swing_buffer = Cfg.SWING_BUFFER
 	var holding: bool = inp.get("mine", false)
 	var swung := false
-	if (holding or swing_buffer > 0) and swing_cd == 0.0 and stun == 0.0:
+	if (holding or swing_buffer > 0) and swing_cd == 0.0 and hit_lock == 0.0:
 		var victims: Array = game.swing_targets(self)
 		if victims or swing_buffer > 0:
 			game.melee(self, victims)

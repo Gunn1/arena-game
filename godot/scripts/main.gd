@@ -1131,7 +1131,7 @@ func _predict_swing(me: Player, input: Dictionary) -> void:
 	my_swing_t = maxf(0.0, my_swing_t - Cfg.DT)
 	my_swing_cd = maxf(0.0, my_swing_cd - Cfg.DT)
 	var held: bool = input.get("mine", false)
-	if held and not mine_was_held and my_swing_cd == 0.0 and me.stun <= 0.0 and sim.state == "play":
+	if held and not mine_was_held and my_swing_cd == 0.0 and me.hurt_t <= 0.0 and sim.state == "play":
 		my_swing_t = Cfg.SWING_SHOW
 		my_swing_cd = Cfg.SWING_COOLDOWN
 		my_swing_until = time + 0.8

@@ -88,7 +88,8 @@ const SWING_DAMAGE := 8.0
 const SWING_KNOCK := 11.0         # knockback speed at 0%
 const SWING_RADIUS := 1.6         # a swing reaches bodies this close to your centre...
 const SWING_ASSIST := 70.0        # ...within this many degrees either side of where you aim (aim assist)
-const SWING_BUFFER := 0.15        # a click during cooldown or stun still swings if it comes free this soon
+const SWING_BUFFER := 0.15        # a click during cooldown or a hit lock still swings if it comes free this soon
+const HIT_LOCK := 0.12            # just after being hit you can't swing this long (then you can, even mid-flight)
 const KNOCK_GROWTH := 60.0        # knockback = base * (1 + damage / KNOCK_GROWTH): 2x at 60%, 3x at 120%
 const MAX_DAMAGE := 300.0
 const STUN_BASE := 0.1            # after a hit you can't walk for STUN_BASE + knock * STUN_PER_KNOCK seconds
@@ -146,7 +147,7 @@ const PUBLIC_SERVER := "arena.tylergunn.me"   # "Play online" on the title scree
 # Game version. Online, the host and every player must match exactly: it's sent as the
 # WebSocket subprotocol, so a different version can't even connect (no silent breakage).
 # The release workflow checks that the git tag (vX.Y.Z) matches this.
-const GAME_VERSION := "0.8.1"
+const GAME_VERSION := "0.8.2"
 const NET_PROTOCOL := "arena-" + GAME_VERSION
 
 const PLAYER_COLORS := [Color(1.0, 0.42, 0.42), Color(0.31, 0.66, 1.0), Color(1.0, 0.82, 0.25), Color(0.72, 0.48, 1.0)]

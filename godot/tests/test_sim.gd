@@ -1016,13 +1016,22 @@ func test_fighting() -> void:
 	run(sim, 5)
 	check(p.swing_t > 0, "...but swings as soon as the cooldown ends")
 
-	# Stunned: no swinging back.
+	# Hit back: just after a hit there's a short lock, then the victim can swing even mid-flight.
 	sim = fight_sim(0.0, 15.1)
 	p = sim.players[0]
 	q = sim.players[1]
-	p.stun = 0.3
+	q.damage = 90.0                              # long stun: well over the attacker's cooldown
+	q.facing = -1
 	sim.update(Cfg.DT, [with({"mine": true}), IDLE])
-	check(q.damage == 0.0 and p.swing_t == 0.0, "a stunned player can't swing")
+	check(q.stun > Cfg.SWING_COOLDOWN, "a 90%% victim is stunned longer than a swing cooldown (%.2f s)" % q.stun)
+	sim.update(Cfg.DT, [IDLE, IDLE])
+	sim.update(Cfg.DT, [IDLE, with({"mine": true, "left": true})])
+	check(q.swing_t == 0.0, "no swing right after being hit (a click during the hit-stop freeze)")
+	var back := false
+	for i in ceili((Cfg.HIT_LOCK + Cfg.HITSTOP_MAX) / Cfg.DT) + 2:
+		sim.update(Cfg.DT, [IDLE, with({"mine": i == 0, "left": true})])
+		back = back or q.swing_t > 0
+	check(back and q.stun > 0, "the click is kept and swings once the lock ends, while still stunned")
 
 	# Aim assist: a wide cone around the aim, not everywhere, and not past SWING_RADIUS.
 	var c := Vector2(10, 10)

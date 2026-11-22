@@ -115,6 +115,11 @@ func update(dt: float, inputs: Array) -> void:
 	hit_flash = maxf(0.0, hit_flash - dt)
 	if hitstop > 0:
 		hitstop -= dt
+		# Frozen, but a click now still counts: it swings once the game moves again.
+		for i in mini(players.size(), inputs.size()):
+			var p: Player = players[i]
+			if inputs[i].get("mine", false) and not p.held.get("mine", false):
+				p.swing_buffer = maxf(p.swing_buffer, Cfg.SWING_BUFFER + hitstop)
 		return
 	if state == "intro":
 		timer -= dt
@@ -266,6 +271,7 @@ func hit_player(target: Player, attacker: Player, dir: Vector2, dmg: float, base
 	target.on_ground = false
 	target.stun = Cfg.STUN_BASE + knock * Cfg.STUN_PER_KNOCK
 	target.hurt_t = 0.15
+	target.hit_lock = Cfg.HIT_LOCK
 	target.jump_cut_ready = false             # a launch upward isn't a jump to cut short
 	if attacker != null and attacker != target:
 		target.last_hit_by = attacker.index
