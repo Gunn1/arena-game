@@ -34,6 +34,11 @@ var aim_vec := Vector2(1, 0)      # unit aim, not snapped (mouse / stick, else a
 var inv := {}
 var slots: Array = []             # null or {"item": key, "charges": n}
 var craft_t := 0.0                # > 0 while the "+Item" popup shows
+var crafting := false             # crafting menu open (craft held longer than MENU_DELAY)
+var craft_hold := 0.0             # how long craft has been held
+var recipe := 0                   # index into Items.RECIPES picked in the menu
+var craft_released := false       # this frame craft was let go...
+var menu_was_open := false        # ...and whether the menu was open (else it was a tap: quick craft)
 var last_crafted := ""            # item key of the last craft, for that popup
 var mouse = null                  # Vector2 in tiles, or null (keyboard / controller)
 var mine_target := Vector2i(-1, -1)
@@ -51,7 +56,8 @@ var swing_t := 0.0                # > 0 while the swing is drawn
 var hurt_t := 0.0                 # > 0 while the hit flash is drawn
 var last_hit_by := -1             # player index, for KO credit
 var last_hit_at := -100.0         # round time of that hit
-var lava_cd := 0.0                # > 0: lava already burned you just now
+var lava_cd := 0.0                # > 0: lava or spikes already hurt you just now
+var bumped := false               # this frame's move ran into a bumper (for its sound)
 # Match stats (kept across rounds)
 var kos := 0
 var falls := 0
@@ -89,6 +95,10 @@ func spawn(col: int, ground_row: int) -> void:
 		slots.append(null)
 	craft_t = 0.0
 	last_crafted = ""
+	crafting = false
+	craft_hold = 0.0
+	craft_released = false
+	menu_was_open = false
 	mouse = null
 	mine_target = Vector2i(-1, -1)
 	mine_progress = 0.0
@@ -224,6 +234,22 @@ func _fields(dt: float, world: World) -> void:
 			var goal := dir * Cfg.FAN_SPEED * (1.0 - absf(off) / (Cfg.FAN_RANGE + 1.0))
 			if (goal - kvx) * dir > 0:
 				kvx = move_toward(kvx, goal, Cfg.FAN_ACCEL * dt)
+		elif tile == World.FAN_U:
+			if not (x < pos.x + 1 and x + W > pos.x):
+				continue                             # not in the fan's column
+			var up := (pos.y + 0.5) - c.y
+			if up <= 0 or up > Cfg.FAN_RANGE:
+				continue
+			var clear := true
+			for ty in range(pos.y - 1, floori(y + H - 0.01), -1):
+				if world.solid(pos.x, ty):
+					clear = false
+					break
+			if not clear:
+				continue
+			var lift := -Cfg.UPDRAFT_SPEED * (1.0 - up / (Cfg.FAN_RANGE + 1.0))
+			if vy > lift:
+				vy = move_toward(vy, lift, Cfg.UPDRAFT_ACCEL * dt)
 		elif tile == World.MAGNET:
 			var to := Vector2(pos) + Vector2(0.5, 0.5) - c
 			var d := to.length()
@@ -300,7 +326,8 @@ func predict_step(dt: float, inp: Dictionary, game) -> void:
 ## Everything movement needs to replay inputs exactly from this point.
 func net_state() -> Array:
 	return [x, y, vy, kvx, walk_v, on_ground, coyote, wall_coyote, wall_dir, last_wall, wall_lock,
-		jump_buffer, jump_cut_ready, stun, facing, aim, land_t, bool(held.get("jump", false)), lava_cd]
+		jump_buffer, jump_cut_ready, stun, facing, aim, land_t, bool(held.get("jump", false)), lava_cd,
+		crafting, craft_hold, recipe, bool(held.get("craft", false))]
 
 
 func set_net_state(a: Array) -> void:
@@ -308,8 +335,9 @@ func set_net_state(a: Array) -> void:
 	on_ground = bool(a[5]); coyote = float(a[6]); wall_coyote = float(a[7]); wall_dir = int(a[8])
 	last_wall = int(a[9]); wall_lock = float(a[10]); jump_buffer = float(a[11]); jump_cut_ready = bool(a[12])
 	stun = float(a[13]); facing = int(a[14]); aim = a[15]; land_t = float(a[16])
-	held = {"jump": bool(a[17])}
+	held = {"jump": bool(a[17]), "craft": bool(a[22])}
 	lava_cd = float(a[18])
+	crafting = bool(a[19]); craft_hold = float(a[20]); recipe = int(a[21])
 	vel_x = walk_v + kvx
 
 
@@ -324,7 +352,9 @@ func _step_body(dt: float, inp: Dictionary, game) -> void:
 	land_t = maxf(0.0, land_t - dt)
 
 	mouse = inp.get("mouse")
-	var dx := int(inp.get("right", false)) - int(inp.get("left", false))
+	_menu(dt, inp)
+	# With the menu open and no mouse, left/right pick a recipe instead of walking.
+	var dx := 0 if crafting and mouse == null else int(inp.get("right", false)) - int(inp.get("left", false))
 	var dy := int(inp.get("down", false)) - int(inp.get("up", false))
 	if dx:
 		facing = dx
@@ -347,6 +377,39 @@ func _step_body(dt: float, inp: Dictionary, game) -> void:
 	vel_x = walk_v + kvx
 
 
+## Crafting menu: hold craft to open it (after MENU_DELAY), pick with the mouse, the wheel, or
+## left/right; letting go crafts the pick. A quick tap sets craft_released without the menu.
+func _menu(dt: float, inp: Dictionary) -> void:
+	craft_released = false
+	var n := Items.RECIPES.size()
+	if inp.get("craft", false):
+		craft_hold += dt
+		if not crafting and craft_hold >= Cfg.MENU_DELAY:
+			crafting = true
+			var best := Items.best_affordable(inv)
+			if best != "":
+				recipe = Items.RECIPES.find(best)
+		if crafting:
+			var wheel := int(inp.get("wheel", 0))
+			if wheel:
+				recipe = posmod(recipe + signi(wheel), n)
+			if mouse != null:
+				var hover := GameSim.menu_hover(self, mouse)
+				if hover != -1:
+					recipe = hover
+			else:
+				if pressed(inp, "right"):
+					recipe = posmod(recipe + 1, n)
+				if pressed(inp, "left"):
+					recipe = posmod(recipe - 1, n)
+	else:
+		if held.get("craft", false):
+			craft_released = true
+			menu_was_open = crafting
+		crafting = false
+		craft_hold = 0.0
+
+
 func _move_body(dt: float, dx: int, inp: Dictionary, game) -> void:
 	var world: World = game.world
 	stun = maxf(0.0, stun - dt)
@@ -364,8 +427,22 @@ func _move_body(dt: float, dx: int, inp: Dictionary, game) -> void:
 	if lava_cd == 0.0 and touching(world, World.LAVA):
 		_burn(game)
 
-	vy = minf(vy + Cfg.GRAVITY * (Cfg.FALL_GRAVITY if vy > 0 else 1.0) * dt, Cfg.MAX_FALL)
+	var spike := _touching_edge(world, World.SPIKES)
+	if lava_cd == 0.0 and spike.x != -1:
+		_spiked(game, spike)
+
+	var climbing := stun == 0.0 and touching(world, World.LADDER)
+	if climbing:
+		# Ladder: up (or jump) climbs, down slides, nothing holds on. Jumping off is walking off.
+		var up: bool = inp.get("up", false) or inp.get("jump", false)
+		vy = -Cfg.CLIMB_SPEED if up else (Cfg.CLIMB_SPEED if inp.get("down", false) else 0.0)
+		jump_buffer = 0.0
+		jump_cut_ready = false
+		coyote = Cfg.COYOTE                          # step off the top and you can still jump
+	else:
+		vy = minf(vy + Cfg.GRAVITY * (Cfg.FALL_GRAVITY if vy > 0 else 1.0) * dt, Cfg.MAX_FALL)
 	_fields(dt, world)
+	var glued := on_ground and _standing_on(world, World.GLUE)
 
 	# Wall slide: holding into a wall while falling slows the fall.
 	var wall := 0 if on_ground else wall_side(world)
@@ -379,7 +456,7 @@ func _move_body(dt: float, dx: int, inp: Dictionary, game) -> void:
 
 	if jump_buffer > 0:
 		if on_ground or coyote > 0:
-			vy = -Cfg.JUMP_SPEED
+			vy = -Cfg.JUMP_SPEED * (Cfg.GLUE_JUMP if glued else 1.0)
 			coyote = 0.0
 			jump_buffer = 0.0
 			jump_cut_ready = true
@@ -413,14 +490,19 @@ func _move_body(dt: float, dx: int, inp: Dictionary, game) -> void:
 	elif wall_lock > 0 and dx == last_wall:   # just after a wall jump you can't walk back into it
 		walk_v = move_toward(walk_v, 0.0, Cfg.ACCEL_AIR * 0.5 * dt)
 	elif dx != 0:
-		walk_v = move_toward(walk_v, dx * Cfg.MOVE_SPEED, (Cfg.ACCEL_GROUND * grip if on_ground else Cfg.ACCEL_AIR) * dt)
+		var speed := Cfg.MOVE_SPEED * (Cfg.GLUE_SLOW if glued else 1.0)
+		walk_v = move_toward(walk_v, dx * speed, (Cfg.ACCEL_GROUND * grip if on_ground else Cfg.ACCEL_AIR) * dt)
 	else:
 		walk_v = move_toward(walk_v, 0.0, (Cfg.FRICTION * grip if on_ground else Cfg.ACCEL_AIR * 0.5) * dt)
 
+	bumped = false
 	move(world, (walk_v + kvx) * dt, 0.0)
 	on_ground = false
 	var fall_speed := vy
 	move(world, 0.0, vy * dt)
+	if bumped:
+		game.sound("push")
+		game.burst(centre(), Items.block_color(World.BUMPER), 10, 6.0, 0.3, 4)
 	if on_ground and fall_speed > Cfg.LAND_SPEED:
 		land_t = 0.12
 		game.sound("land")
@@ -451,30 +533,64 @@ func touching(world: World, tile: int) -> bool:
 	return false
 
 
-## Lava: thrown straight up and burned. The launch is movement (so online prediction matches);
-## the damage goes through GameSim.hit_player when there is one (attacker null: no KO credit).
+## Lava: thrown straight up and burned.
 func _burn(game) -> void:
+	_hurt(game, null, Cfg.LAVA_DAMAGE, Vector2(0, -Cfg.LAVA_LAUNCH))
+	game.burst(Vector2(x + W / 2.0, y + H), Color(1.0, 0.5, 0.12), 14, 7.0, 0.5, 4, 5.0)
+
+
+## Spikes: thrown up and away from the spike, hurt, credited to whoever placed it.
+func _spiked(game, at: Vector2i) -> void:
+	var away := 1.0 if centre().x >= at.x + 0.5 else -1.0
+	var by = null
+	var owner: int = game.world.owners.get(at, -1)
+	if owner >= 0 and "players" in game and owner < game.players.size():
+		by = game.players[owner]
+	_hurt(game, by, Cfg.SPIKE_DAMAGE, Vector2(away * 0.6, -0.8) * Cfg.SPIKE_LAUNCH)
+	game.burst(centre(), Color(0.85, 0.85, 0.9), 10, 6.0, 0.3, 3)
+
+
+## Damage plus a fixed launch (no knockback growth). The launch is movement, so online prediction
+## matches; the damage goes through GameSim.hit_player when there is one.
+func _hurt(game, by, dmg: float, launch: Vector2) -> void:
 	lava_cd = Cfg.LAVA_COOLDOWN
 	if game.has_method("hit_player"):
-		game.hit_player(self, null, Vector2(0, -1), Cfg.LAVA_DAMAGE, 0.0)
+		game.hit_player(self, by, Vector2(0, -1), dmg, 0.0)
 	else:
 		# What hit_player does with no knockback, so a predicting client moves the same way.
-		damage = minf(Cfg.MAX_DAMAGE, damage + Cfg.LAVA_DAMAGE)
-		kvx = 0.0
+		damage = minf(Cfg.MAX_DAMAGE, damage + dmg)
 		stun = Cfg.STUN_BASE
 		hurt_t = 0.15
-	vy = -Cfg.LAVA_LAUNCH
+	kvx = launch.x
+	vy = launch.y
 	on_ground = false
 	jump_cut_ready = false
-	game.burst(Vector2(x + W / 2.0, y + H), Color(1.0, 0.5, 0.12), 14, 7.0, 0.5, 4, 5.0)
+
+
+## A tile of this type touching the body (or just beside it), or (-1, -1).
+func _touching_edge(world: World, tile: int) -> Vector2i:
+	for ty in range(floori(y - 0.05), floori(y + H + 0.05) + 1):
+		for tx in range(floori(x - 0.05), floori(x + W + 0.05) + 1):
+			if world.get_tile(tx, ty) == tile:
+				return Vector2i(tx, ty)
+	return Vector2i(-1, -1)
+
+
+## Standing on at least one tile of this type.
+func _standing_on(world: World, tile: int) -> bool:
+	var row := floori(y + H + 0.05)
+	for tx in range(floori(x), floori(x + W - 1e-6) + 1):
+		if world.get_tile(tx, row) == tile:
+			return true
+	return false
 
 
 func _use_hands(dt: float, inp: Dictionary, game) -> void:
 	var world: World = game.world
-	# Quick craft: one press makes the most valuable item you can afford.
-	if pressed(inp, "craft"):
-		var key := Items.best_affordable(inv)
-		if key != "":
+	# Letting go of craft: the menu's pick, or after a quick tap the most valuable you can afford.
+	if craft_released:
+		var key: String = Items.RECIPES[recipe] if menu_was_open else Items.best_affordable(inv)
+		if key != "" and can_afford(key):
 			craft(key)
 			last_crafted = key
 			craft_t = 0.8
@@ -549,6 +665,9 @@ func move(world: World, mx: float, my: float) -> void:
 			hits.append(t)
 	if hits.is_empty():
 		return
+	var bump := false
+	for t: Vector2i in hits:
+		bump = bump or world.get_tile(t.x, t.y) == World.BUMPER
 	if mx > 0:
 		x = hits.map(func(t): return t.x).min() - W
 	elif mx < 0:
@@ -556,6 +675,11 @@ func move(world: World, mx: float, my: float) -> void:
 	if mx != 0:
 		kvx = 0.0
 		walk_v = 0.0
+		if bump:
+			kvx = -signf(mx) * Cfg.BUMPER_KNOCK      # a bumper flings you back the way you came
+			vy = minf(vy, -6.0)
+			stun = maxf(stun, 0.2)
+			bumped = true
 	if my > 0:
 		var floor_row: int = hits.map(func(t): return t.y).min()
 		y = floor_row - H
@@ -567,6 +691,10 @@ func move(world: World, mx: float, my: float) -> void:
 		if pad:
 			vy = -Cfg.BOUNCE_LAUNCH                    # a bounce pad launches you, even just stepping on it
 			jump_cut_ready = false
+		elif bump:
+			vy = -Cfg.BUMPER_KNOCK * 0.8               # landing on a bumper pops you back up
+			jump_cut_ready = false
+			bumped = true
 		elif bouncy and vy > Cfg.SLIME_MIN:
 			vy = -vy * Cfg.SLIME_BOUNCE                # slime throws you back up instead of landing
 		else:
@@ -574,4 +702,5 @@ func move(world: World, mx: float, my: float) -> void:
 			on_ground = true
 	elif my < 0:
 		y = hits.map(func(t): return t.y).max() + 1
-		vy = 0.0
+		vy = 6.0 if bump else 0.0
+		bumped = bumped or bump

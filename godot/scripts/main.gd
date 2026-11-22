@@ -182,7 +182,9 @@ func _arg(args: PackedStringArray, flag: String, fallback: String) -> String:
 # The mask says which of the 4 neighbours are air, so edges can be shaded per tile.
 const TILE_TYPES := [World.DIRT, World.STONE, World.PLACED, World.COPPER, World.CRYSTAL,
 	World.SAND, World.ICE, World.SLIME, World.LAVA, World.TNT, World.STEEL, World.FAN_L, World.FAN_R,
-	World.MAGNET, World.TURRET, World.BOUNCE]
+	World.MAGNET, World.TURRET, World.BOUNCE, World.FAN_U, World.TRAPDOOR, World.BUMPER, World.GLUE,
+	World.HEAL, World.FAKE]
+# Ladders and spikes aren't full blocks: only the overlay draws them (_draw_devices).
 const VARIANTS := 3
 # "TNT" in a 3x5 pixel font, one string per row.
 const TNT_LETTERS := ["### # # ###", " #  ###  # ", " #  ###  # ", " #  # #  # ", " #  # #  # "]
@@ -214,6 +216,8 @@ func _build_tileset() -> TileSet:
 	rng.seed = 20261121
 	for r in TILE_TYPES.size():
 		var tile: int = TILE_TYPES[r]
+		if tile == World.FAKE:
+			tile = World.DIRT                        # a fake block is painted exactly like dirt
 		for v in VARIANTS:
 			var base := _paint_base(tile, rng)
 			for mask in 16:
@@ -377,6 +381,20 @@ func _draw_devices() -> void:
 					var sy := (pos.y + 0.2 + 0.2 * (i % 4)) * CELL
 					var a := 0.45 * (1.0 - k / reach)
 					overlay.draw_line(Vector2(sx, sy), Vector2(sx - dir * 10, sy), Color(0.85, 0.95, 1.0, a), 2.0)
+		elif tile == World.FAN_U:
+			var reach := 0
+			while reach < Cfg.FAN_RANGE and not w.solid(pos.x, pos.y - reach - 1):
+				reach += 1
+			if reach > 0:
+				for i in 4:
+					var k := fmod(time * 6.0 + i * reach / 4.0, float(reach))
+					var sx := (pos.x + 0.2 + 0.2 * i) * CELL
+					var sy := (pos.y + 0.5 - (0.5 + k)) * CELL
+					var a := 0.45 * (1.0 - k / reach)
+					overlay.draw_line(Vector2(sx, sy), Vector2(sx, sy + 10), Color(0.85, 0.95, 1.0, a), 2.0)
+		elif tile == World.HEAL:
+			var hc := (Vector2(pos) + Vector2(0.5, 0.5)) * CELL
+			overlay.draw_circle(hc, Cfg.HEAL_RANGE * CELL, Color(0.4, 1.0, 0.55, 0.07 + 0.04 * sin(time * 4.0)))
 		elif tile == World.MAGNET:
 			var c := (Vector2(pos) + Vector2(0.5, 0.5)) * CELL
 			overlay.draw_arc(c, Cfg.MAGNET_RANGE * CELL, 0, TAU, 48, Color(0.95, 0.3, 0.35, 0.12), 1.5)
@@ -1544,6 +1562,10 @@ func _draw_game_hud() -> void:
 		for d in [Vector2.RIGHT, Vector2.LEFT, Vector2.UP, Vector2.DOWN]:
 			hud.draw_line(m + d * 4, m + d * 12, me.color, 2.0)
 
+	for p: Player in sim.players:
+		if p.alive and p.crafting and _shows_menu(p):
+			_draw_craft_menu(p)
+
 	if sim.impact():
 		hud.draw_rect(Rect2(0, 0, WIDTH, HEIGHT), Color(1, 1, 1, 0.08))
 
@@ -1560,6 +1582,38 @@ func _draw_game_hud() -> void:
 					p.falls, "" if p.falls == 1 else "s", int(p.dealt)]
 				stats.append([s, p.color])
 			_banner(sim.message, sub, stats)
+
+
+## Only the players on this screen see their own crafting menu.
+func _shows_menu(p: Player) -> bool:
+	match mode:
+		"local": return true
+		"client": return p.index == my_index
+		"host": return p.index == 0
+	return false
+
+
+## Hold craft: every recipe in a grid above you, the pick outlined, what it costs and does below.
+func _draw_craft_menu(p: Player) -> void:
+	var layout := GameSim.menu_layout(p)
+	var panel: Rect2 = layout[0]
+	hud.draw_rect(panel, Color(PANEL, 0.95))
+	hud.draw_rect(panel, p.color, false, 2.0)
+	for i in Items.RECIPES.size():
+		var r: Rect2 = layout[1][i]
+		var k: String = Items.RECIPES[i]
+		hud.draw_rect(r, SLOT_BG)
+		Items.draw_icon(hud, k, r.grow(-2), p.color, not p.can_afford(k))
+		if i == p.recipe:
+			hud.draw_rect(r.grow(2), Color.WHITE, false, 2.0)
+	var key: String = Items.RECIPES[p.recipe]
+	var item: Dictionary = Items.ITEMS[key]
+	var ok := p.can_afford(key)
+	var cx := panel.get_center().x
+	var y := panel.end.y - 26
+	text(hud, "%s (%d): %s" % [item["name"], item["charges"], Items.cost_text(key)], Vector2(cx, y), 14, INK, true)
+	var sub: String = item["help"] if ok else Items.missing_text(key, p.inv)
+	text(hud, _clip(sub, 13, panel.size.x - 12), Vector2(cx, y + 17), 13, DIM if ok else DANGER, true)
 
 
 ## lines: [text, color] pairs shown between the title and the subtitle.
@@ -1636,22 +1690,22 @@ func _draw_title() -> void:
 		"Q/E/R items   F craft   the mouse picks the block within reach",
 		"Local P2:  J/L move   I jump   K aim down   hold U: mine / hit   O place   7/8/9 items   H craft",
 		"Controller:  stick move   A jump   right stick aim   hold RT: mine / hit   LT place   X/Y/B items   RB craft",
-		"Craft: one press makes the best special block you can afford. Items keys place it (farther reach).   M = mute   N = music",
+		"Craft: tap = the best block you can afford, hold = pick from the menu (mouse/wheel/left-right).   M = mute   N = music",
 	]
 	for i in lines.size():
 		text(hud, lines[i], Vector2(cx, 292 + i * 24), 15, DIM, true)
+	var per_col := ceili(Items.RECIPES.size() / 2.0)
 	for i in Items.RECIPES.size():
 		var key: String = Items.RECIPES[i]
 		var item: Dictionary = Items.ITEMS[key]
-		var rx := cx - 320
-		var ry := 410 + i * 34
-		var r := Rect2(rx, ry, 28, 28)
+		var rx := cx - 590 + (i / per_col) * 600
+		var ry := 425 + (i % per_col) * 30
+		var r := Rect2(rx, ry, 24, 24)
 		hud.draw_rect(r, SLOT_BG)
-		Items.draw_icon(hud, key, r.grow(-3), INK)
-		var uses := "%d block%s" % [item["charges"], "" if item["charges"] == 1 else "s"]
-		text(hud, item["name"], Vector2(rx + 38, ry + 20), 16, INK)
-		text(hud, "%s (%s)" % [item["help"], uses], Vector2(rx + 160, ry + 20), 16, DIM)
-		text(hud, Items.cost_text(key), Vector2(rx + 460, ry + 20), 16, DIM)
+		Items.draw_icon(hud, key, r.grow(-1), INK)
+		text(hud, "%s x%d" % [item["name"], item["charges"]], Vector2(rx + 32, ry + 17), 14, INK)
+		text(hud, _clip(item["help"], 13, 270), Vector2(rx + 165, ry + 17), 13, DIM)
+		text(hud, Items.cost_text(key), Vector2(rx + 445, ry + 17), 13, DIM)
 	if notice:
 		text(hud, notice, Vector2(cx, HEIGHT - 40), 20, DANGER, true)
 

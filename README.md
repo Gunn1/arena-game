@@ -45,7 +45,7 @@ To run an always-on server that browser players can join at `wss://arena.<your-d
 
 - **Fighting:** the mine button hits a player in front of you. Each hit adds damage %; the higher it is, the farther hits launch you. Fall out within 4 s of a hit and the hitter gets the KO.
 - **The zone:** the arena crumbles from both edges toward the middle (starts after 10 s, about 90 s to close).
-- **Crafting:** one press crafts the most valuable special block you can afford; your HUD shows what it'll make (or what you still need). Item keys place it, up to 4.5 tiles away.
+- **Crafting:** tap craft to make the most valuable special block you can afford (your HUD shows which). Hold craft to open the menu: pick with the mouse, wheel, or left/right, and let go to craft it. Item keys place blocks up to 4.5 tiles away.
 - **Wall jump:** jump while a wall is beside your upper body in the air; not off the same side twice in a row. Just above the floor, jump waits for the landing instead.
 - **Local games:** 2/3/4 on the title screen. P2 uses the right side of the keyboard unless a controller is plugged in; P3 and P4 need controllers.
 - M = mute, N = music on/off, Esc = back.
@@ -66,14 +66,22 @@ Any biome can have TNT: mine it (or blow it up) and it explodes a second later, 
 
 ## Special blocks
 
-Crafted into your 3 slots, placed with the item keys. Fans, magnets and bounce pads work on everyone, you included; mines and turrets ignore whoever placed them.
+Crafted into your 3 slots, placed with the item keys. Fans, magnets, bounce pads, spikes, bumpers, glue and springs work on everyone, you included; mines, turrets and trapdoors ignore whoever placed them.
 
 | Block | Cost | Blocks | Does |
 |---|---|---|---|
-| Fan | 3 dirt | 2 | blows players away along its row (8 tiles, stopped by blocks) |
+| Ladder | 2 dirt | 4 | climb it (up/jump climbs, down slides) |
+| Ice | 1 dirt, 1 stone | 2 | slippery |
+| Fake Block | 2 dirt, 1 stone | 3 | looks like dirt, you fall through |
+| Fan | 3 dirt | 2 | blows players away; placed above/below you it's an updraft |
+| Glue | 2 dirt, 1 copper | 3 | slow walking, weak jumps |
 | Bounce Pad | 2 dirt, 1 copper | 3 | launches anyone who steps on it ~5 tiles up |
+| Trapdoor | 2 stone, 1 copper | 3 | drops away under enemies |
 | Steel | 3 stone, 1 copper | 4 | slow to mine, bombproof |
 | Magnet | 1 stone, 2 copper | 2 | pulls everyone within 6 tiles toward it |
+| Spikes | 2 stone, 1 crystal | 3 | hurts and throws anyone who touches them |
+| Bumper | 2 stone, 2 copper | 2 | flings back anyone who runs into it |
+| Healing Spring | 1 copper, 1 crystal | 1 | heals anyone nearby, 50% total |
 | Mine | 1 stone, 1 copper, 1 crystal | 2 | TNT that blows when an enemy gets close |
 | Turret | 2 stone, 1 copper, 1 crystal | 1 | shoots enemies within 12 tiles |
 

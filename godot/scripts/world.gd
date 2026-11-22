@@ -3,9 +3,13 @@ class_name World
 extends RefCounted
 
 # New types go at the end so the numbers (sent online, used by Cfg.MINE_TIME) never change.
-enum { EMPTY, DIRT, STONE, PLACED, COPPER, CRYSTAL, SAND, ICE, SLIME, LAVA, TNT, STEEL, FAN_L, FAN_R, MAGNET, TURRET, BOUNCE }
-# Special blocks players craft and place, with an effect around them. Kept in `devices`.
-const DEVICES := [FAN_L, FAN_R, MAGNET, TURRET, BOUNCE]
+enum { EMPTY, DIRT, STONE, PLACED, COPPER, CRYSTAL, SAND, ICE, SLIME, LAVA, TNT, STEEL, FAN_L, FAN_R, MAGNET, TURRET, BOUNCE,
+	SPIKES, TRAPDOOR, LADDER, FAN_U, BUMPER, GLUE, HEAL, FAKE }
+# Special blocks players craft and place. Kept in `devices`: they're drawn on top of the map each
+# frame (main.gd), and the ones with an effect around them are found from there.
+const DEVICES := [FAN_L, FAN_R, FAN_U, MAGNET, TURRET, BOUNCE, SPIKES, TRAPDOOR, LADDER, BUMPER, GLUE, HEAL]
+# In the grid but not solid: lava (you fall in), ladders (you climb), fake blocks (look like dirt).
+const PASSABLE := [EMPTY, LAVA, LADDER, FAKE]
 const DROPS := {DIRT: "dirt", PLACED: "dirt", STONE: "stone", COPPER: "copper", CRYSTAL: "crystal",
 	SAND: "dirt", ICE: "stone", SLIME: "dirt"}
 const ORE_TILES := {"copper": COPPER, "crystal": CRYSTAL}
@@ -52,10 +56,9 @@ func get_tile(x: int, y: int) -> int:
 	return grid[y * COLS + x] if in_bounds(x, y) else EMPTY
 
 
-## Lava is in the grid but isn't solid: you fall into it (and get thrown out).
+## Lava, ladders and fake blocks are in the grid but aren't solid.
 func solid(x: int, y: int) -> bool:
-	var t := get_tile(x, y)
-	return t != EMPTY and t != LAVA
+	return not get_tile(x, y) in PASSABLE
 
 
 func set_tile(x: int, y: int, tile: int, cause := "mine") -> void:

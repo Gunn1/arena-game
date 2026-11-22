@@ -9,6 +9,11 @@ var players: Array = []           # Player
 var projectiles: Array = []       # turret shots: {x, y, vx, vy, dist, owner} (owner -1: nobody)
 var bombs: Array = []             # lit TNT: {x, y, vx, vy, fuse, owner}
 var turret_cd := {}               # Vector2i -> seconds until that turret can shoot again
+var heal_left := {}               # Vector2i -> damage % a healing spring can still take off
+# Crafting menu geometry in screen pixels, shared by drawing (main.gd) and mouse hover.
+const MENU_COLS := 7
+const MENU_BOX := 30
+const MENU_GAP := 6
 var events: Array = []            # ["snd", name, min_gap] / ["pt", pos, color, count, speed, life, size, up]
 var state := "intro"              # intro, play, outro, match_over
 var timer := 0.0
@@ -77,6 +82,7 @@ func new_round() -> void:
 	projectiles.clear()
 	bombs.clear()
 	turret_cd.clear()
+	heal_left.clear()
 	past.clear()                                 # everyone respawned: no rewinding into last round
 	round_time = 0.0
 	state = "intro"
@@ -266,6 +272,36 @@ func impact() -> bool:
 
 # --- items ---------------------------------------------------------------------------
 
+static func menu_layout(p: Player) -> Array:
+	var n := Items.RECIPES.size()
+	var rows := ceili(n / float(MENU_COLS))
+	var row_w := MENU_COLS * (MENU_BOX + MENU_GAP) - MENU_GAP
+	var w := row_w + 24
+	var h := rows * (MENU_BOX + MENU_GAP) + 50
+	var px := (p.x + Cfg.PLAYER_W / 2.0) * Cfg.CELL
+	var py := p.y * Cfg.CELL + Cfg.HUD_H
+	var panel := Rect2(px - w / 2.0, py - 10 - h, w, h)
+	panel.position.x = clampf(panel.position.x, 4, Cfg.WIDTH - w - 4)
+	panel.position.y = clampf(panel.position.y, Cfg.HUD_H + 4, Cfg.HEIGHT - h - 4)
+	var rects := []
+	for i in n:
+		var col := i % MENU_COLS
+		var row := i / MENU_COLS
+		rects.append(Rect2(panel.position.x + 12 + col * (MENU_BOX + MENU_GAP),
+			panel.position.y + 8 + row * (MENU_BOX + MENU_GAP), MENU_BOX, MENU_BOX))
+	return [panel, rects]
+
+
+## The recipe under the mouse (in tiles), or -1.
+static func menu_hover(p: Player, mouse_tiles: Vector2) -> int:
+	var m := Vector2(mouse_tiles.x * Cfg.CELL, mouse_tiles.y * Cfg.CELL + Cfg.HUD_H)
+	var rects: Array = menu_layout(p)[1]
+	for i in rects.size():
+		if rects[i].grow(MENU_GAP / 2.0).has_point(m):
+			return i
+	return -1
+
+
 ## Place a special block at the player's (longer-reach) target. Returns false if there's no
 ## room (no charge spent). Fans blow away from whoever placed them.
 func use_item(p: Player, key: String) -> bool:
@@ -275,8 +311,12 @@ func use_item(p: Player, key: String) -> bool:
 		return false
 	var tile: int = Items.ITEMS[key]["tile"]
 	if tile == World.FAN_L or tile == World.FAN_R:
-		var right := t.x + 0.5 > p.centre().x or (is_equal_approx(t.x + 0.5, p.centre().x) and p.facing > 0)
-		tile = World.FAN_R if right else World.FAN_L
+		# Above or below you: an updraft. Beside you: blows away from you.
+		var off := t.x + 0.5 - p.centre().x
+		if absf(off) < 0.9:
+			tile = World.FAN_U
+		else:
+			tile = World.FAN_R if off > 0 else World.FAN_L
 	world.set_tile(t.x, t.y, tile, "place")
 	world.owners[t] = p.index
 	turret_cd[t] = Cfg.TURRET_RELOAD * 0.5
@@ -310,6 +350,32 @@ func _update_devices(dt: float) -> void:
 			projectiles.append({"x": from.x + u.x * 0.7, "y": from.y + u.y * 0.7, "vx": u.x, "vy": u.y, "dist": 0.0, "owner": owner})
 			turret_cd[pos] = Cfg.TURRET_RELOAD
 			sound("push")
+	# Trapdoors drop away under enemies; healing springs heal anyone close until used up.
+	for pos: Vector2i in world.devices.keys():
+		var tile: int = world.devices[pos]
+		if tile == World.TRAPDOOR and not world.warnings.has(pos):
+			var owner: int = world.owners.get(pos, -1)
+			for q: Player in players:
+				if q.alive and q.index != owner and q.on_ground and q.y + Cfg.PLAYER_H > pos.y - 0.1 \
+						and q.y + Cfg.PLAYER_H < pos.y + 0.1 and q.x < pos.x + 1 and q.x + Cfg.PLAYER_W > pos.x:
+					world.warn(pos.x, pos.y)
+					world.warnings[pos] = Cfg.TRAP_DROP
+					sound("crumble", 0.1)
+					break
+		elif tile == World.HEAL:
+			var left: float = heal_left.get(pos, Cfg.HEAL_TOTAL)
+			var at := Vector2(pos) + Vector2(0.5, 0.5)
+			for q: Player in players:
+				if q.alive and q.damage > 0 and q.centre().distance_to(at) <= Cfg.HEAL_RANGE and left > 0:
+					var amount := minf(minf(q.damage, Cfg.HEAL_RATE * dt), left)
+					q.damage -= amount
+					left -= amount
+					if randf() < 0.15:
+						burst(q.centre(), Color(0.4, 1.0, 0.55), 2, 2.0, 0.5, 3, 3.0)
+			heal_left[pos] = left
+			if left <= 0:
+				world.set_tile(pos.x, pos.y, World.EMPTY, "used")
+				heal_left.erase(pos)
 	for pos: Vector2i in world.owners.keys():
 		if world.get_tile(pos.x, pos.y) != World.TNT:
 			continue

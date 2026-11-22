@@ -617,23 +617,26 @@ func test_crafting() -> void:
 	check(p.slots[2]["item"] == "turret", "full slots: replaces fewest charges")
 
 	# Values: material value dirt 1, stone 1, copper 3, crystal 5.
-	var values := {"fan": 3, "bounce": 5, "steel": 6, "magnet": 7, "mine": 9, "turret": 10}
+	var values := {"ladder": 2, "ice": 2, "fake": 3, "fan": 3, "glue": 5, "bounce": 5, "trapdoor": 5, "steel": 6,
+		"magnet": 7, "spikes": 7, "bumper": 8, "heal": 8, "mine": 9, "turret": 10}
+	check(values.size() == Items.RECIPES.size(), "every recipe has a value check")
 	for key: String in values:
 		var v: int = Items.item_value(key)
 		check(v == int(values[key]), "%s is worth %d (got %d)" % [key, values[key], v])
 
-	# Quick craft picks the most valuable affordable recipe ("" if none).
+	# Quick craft picks the most valuable affordable recipe (ties: later in RECIPES; "" if none).
 	var picks := [
 		[{}, ""],
-		[{"stone": 9}, ""],                                  # every non-dirt recipe needs copper or crystal
+		[{"stone": 9}, ""],                                  # stone alone buys nothing
+		[{"dirt": 2}, "ladder"],
 		[{"dirt": 3}, "fan"],
-		[{"dirt": 9}, "fan"],
-		[{"dirt": 2, "copper": 1}, "bounce"],
+		[{"dirt": 2, "stone": 1}, "fake"],                   # fake 3 beats ladder and ice (2)
+		[{"dirt": 2, "copper": 1}, "bounce"],                # glue and bounce tie at 5: the later one
 		[{"stone": 3, "copper": 1}, "steel"],
-		[{"stone": 3, "copper": 2}, "magnet"],               # magnet 7 beats steel 6
-		[{"dirt": 2, "stone": 3, "copper": 2}, "magnet"],    # also affords bounce and steel
-		[{"stone": 1, "copper": 1, "crystal": 1}, "mine"],
-		[{"stone": 2, "copper": 1, "crystal": 1}, "turret"], # turret 10 beats mine 9
+		[{"stone": 3, "copper": 2}, "bumper"],               # bumper 8 beats magnet 7, steel 6
+		[{"copper": 1, "crystal": 1}, "heal"],
+		[{"stone": 1, "copper": 1, "crystal": 1}, "mine"],   # mine 9 beats heal 8
+		[{"stone": 2, "copper": 1, "crystal": 1}, "turret"],
 	]
 	for c: Array in picks:
 		var inv: Dictionary = inv_of(c[0])
@@ -653,44 +656,73 @@ func test_crafting() -> void:
 
 	# Next goal = fewest missing units; ties go to the lower value, then earlier in RECIPES.
 	var goals := [
-		[{}, "fan"],                               # fan, bounce, magnet, mine all miss 3; fan is cheapest
-		[{"copper": 1}, "bounce"],                 # bounce, magnet, mine miss 2; bounce is cheapest
-		[{"stone": 2}, "steel"],                   # steel, magnet, mine, turret miss 2; steel is cheapest
-		[{"crystal": 1}, "mine"],                  # mine misses 2, the rest 3+
+		[{}, "ladder"],                            # ladder, ice and heal miss 2; ladder is cheapest and first
+		[{"crystal": 1}, "heal"],                  # heal misses 1
+		[{"stone": 2}, "ice"],                     # ice, trapdoor, spikes miss 1; ice is cheapest
+		[{"stone": 2, "copper": 1}, "trapdoor"],   # affordable: nothing missing
 	]
 	for c: Array in goals:
 		var want: String = c[1]
 		var got: String = Items.next_goal(inv_of(c[0]))
 		check(got == want, "next_goal %s -> \"%s\" (got \"%s\")" % [str(c[0]), want, got])
 
-	# Through the sim: one press crafts the best affordable recipe; holding doesn't repeat it.
+	# Tap craft (press and let go): the best affordable recipe, made when you let go.
 	sim = floor_sim()
 	p = sim.players[0]
 	p.inv = inv_of({"stone": 4, "copper": 3})
 	sim.update(Cfg.DT, [with({"craft": true}), IDLE])
-	check(p.slots[0] != null and p.slots[0]["item"] == "magnet", "press craft crafts magnet (best affordable)")
-	check(p.last_crafted == "magnet", "last_crafted is magnet (got \"%s\")" % p.last_crafted)
-	check(p.craft_t > 0.0, "craft_t set after crafting")
-	check(p.inv["stone"] == 3 and p.inv["copper"] == 1, "magnet cost paid: %s" % str(p.inv))
-	for i in 3:
-		sim.update(Cfg.DT, [with({"craft": true}), IDLE])
-	check(p.slots[1] == null and p.inv["stone"] == 3 and p.inv["copper"] == 1, "holding craft doesn't craft again")
+	check(p.slots[0] == null, "nothing is made while craft is still down")
 	sim.update(Cfg.DT, [IDLE, IDLE])
+	check(p.slots[0] != null and p.slots[0]["item"] == "bumper", "a tap crafts bumper (best affordable)")
+	check(p.last_crafted == "bumper" and p.craft_t > 0.0, "last_crafted and popup set")
+	check(p.inv["stone"] == 2 and p.inv["copper"] == 1, "bumper cost paid: %s" % str(p.inv))
+	check(not p.crafting, "a tap never opens the menu")
 	sim.update(Cfg.DT, [with({"craft": true}), IDLE])
-	check(p.slots[1] != null and p.slots[1]["item"] == "steel", "second press crafts the next best (steel) into slot 2")
-	check(p.last_crafted == "steel" and p.inv["stone"] == 0 and p.inv["copper"] == 0, "steel cost paid, last_crafted steel")
 	sim.update(Cfg.DT, [IDLE, IDLE])
+	check(p.slots[1] != null and p.slots[1]["item"] == "trapdoor", "second tap crafts the next best (trapdoor)")
 	sim.update(Cfg.DT, [with({"item2": true}), IDLE])
-	check(sim.world.get_tile(16, 19) == World.STEEL and p.slots[1]["charges"] == 3, "item2 places the crafted steel in front")
+	check(sim.world.get_tile(16, 19) == World.TRAPDOOR and p.slots[1]["charges"] == 2, "item2 places the trapdoor in front")
 
-	# Holding craft no longer steers a menu: left/right walk as normal.
+	# Holding craft opens the menu on the best affordable pick; left/right change it (and don't walk);
+	# letting go crafts the pick.
+	sim = floor_sim()
+	p = sim.players[0]
+	p.inv = inv_of({"dirt": 5, "stone": 4, "copper": 3})
+	var held_frames := ceili(Cfg.MENU_DELAY / Cfg.DT) + 1
+	run(sim, held_frames, [with({"craft": true}), IDLE])
+	check(p.crafting and Items.RECIPES[p.recipe] == "bumper", "holding opens the menu on the best pick (%s)" % Items.RECIPES[p.recipe])
+	var x_menu := p.x
+	sim.update(Cfg.DT, [with({"craft": true, "left": true}), IDLE])
+	check(Items.RECIPES[p.recipe] == "spikes", "left picks the previous recipe")
+	sim.update(Cfg.DT, [with({"craft": true}), IDLE])
+	sim.update(Cfg.DT, [with({"craft": true, "left": true}), IDLE])
+	check(Items.RECIPES[p.recipe] == "magnet", "left again: magnet")
+	run(sim, 10, [with({"craft": true, "left": true}), IDLE])
+	check(absf(p.x - x_menu) < 0.01, "with the menu open (no mouse), left/right don't walk")
+	check(Items.RECIPES[p.recipe] == "magnet", "holding left doesn't keep scrolling")
+	sim.update(Cfg.DT, [IDLE, IDLE])
+	check(not p.crafting and p.slots[0] != null and p.slots[0]["item"] == "magnet", "letting go crafts the pick")
+	# Wheel and mouse hover pick too; an unaffordable pick crafts nothing.
+	run(sim, held_frames, [with({"craft": true}), IDLE])
+	check(Items.RECIPES[p.recipe] == "steel", "reopened on the new best pick (steel)")
+	sim.update(Cfg.DT, [with({"craft": true, "wheel": 1}), IDLE])
+	check(Items.RECIPES[p.recipe] == "magnet", "the wheel moves the pick")
+	var r: Rect2 = GameSim.menu_layout(p)[1][Items.RECIPES.find("turret")]
+	var mouse_tiles := Vector2(r.get_center().x / Cfg.CELL, (r.get_center().y - Cfg.HUD_H) / Cfg.CELL)
+	sim.update(Cfg.DT, [with({"craft": true, "mouse": mouse_tiles}), IDLE])
+	check(Items.RECIPES[p.recipe] == "turret", "the mouse picks the recipe under it (%s)" % Items.RECIPES[p.recipe])
+	var inv_before: Dictionary = p.inv.duplicate()
+	sim.update(Cfg.DT, [IDLE, IDLE])
+	check(p.inv == inv_before, "letting go on something you can't afford crafts nothing")
+
+	# Tap craft + right still walks.
 	sim = floor_sim()
 	p = sim.players[0]
 	p.inv = inv_of({"stone": 3, "copper": 2})
 	var start := p.x
-	for i in 20:
-		sim.update(Cfg.DT, [with({"craft": true, "right": true}), IDLE])
-	check(p.x > start + 1.0, "craft + right walks right (moved %.2f)" % (p.x - start))
+	for i in 8:
+		sim.update(Cfg.DT, [with({"craft": i < 3, "right": true}), IDLE])
+	check(p.x > start + 0.2, "tap craft + right walks right (moved %.2f)" % (p.x - start))
 
 	# Nothing affordable: nothing changes.
 	sim = floor_sim()
@@ -698,10 +730,11 @@ func test_crafting() -> void:
 	var before_crafted: String = p.last_crafted
 	sim.update(Cfg.DT, [with({"craft": true}), IDLE])
 	sim.update(Cfg.DT, [IDLE, IDLE])
+	sim.update(Cfg.DT, [IDLE, IDLE])
 	check(p.slots.count(null) == Cfg.SLOTS, "empty inventory crafts nothing")
 	check(p.inv == inv_of({}), "empty inventory stays empty")
 	check(p.last_crafted == before_crafted and p.craft_t == 0.0, "no last_crafted / craft_t without a craft")
-	print("crafting: costs, stacking, replacement, values, best_affordable, missing_text, next_goal, quick craft OK")
+	print("crafting: costs, stacking, replacement, values, best_affordable, missing_text, next_goal, tap craft, menu (keys, wheel, mouse) OK")
 
 
 func test_items() -> void:
@@ -802,7 +835,99 @@ func test_items() -> void:
 		sim.update(Cfg.DT, [IDLE, IDLE])
 		hit = hit or q.damage > 0
 	check(hit, "a turret shoots an enemy in range")
-	print("items: ore, placing + reach, steel, fan, magnet, bounce pad, mine, turret OK")
+	# Updraft: a fan placed in your own column blows up and lifts players above it.
+	sim = floor_sim()
+	p = sim.players[0]
+	sim.world.set_tile(15, 20, World.EMPTY)
+	p.mouse = Vector2(floori(p.centre().x) + 0.5, 21.5)
+	check(sim.use_item(p, "fan") and sim.world.get_tile(floori(p.centre().x), 21) == World.FAN_U, "a fan placed below you is an updraft")
+	sim = floor_sim()
+	q = sim.players[1]
+	var col := floori(q.centre().x)
+	sim.world.set_tile(col, 20, World.FAN_U)
+	var y0 := q.y
+	run(sim, 40)
+	check(q.y < y0 - 2.0, "an updraft lifts the player above it (rose %.2f)" % (y0 - q.y))
+
+	# Ladder: not solid; up climbs, nothing holds on (no falling), and it's placeable in the air.
+	sim = floor_sim()
+	q = sim.players[1]
+	col = floori(q.centre().x)
+	for ty in range(12, 20):
+		sim.world.set_tile(col, ty, World.LADDER)
+	check(not sim.world.solid(col, 15), "ladders aren't solid")
+	y0 = q.y
+	run(sim, 40, [IDLE, with({"up": true})])
+	check(q.y < y0 - 3.0, "up climbs a ladder (rose %.2f)" % (y0 - q.y))
+	var hang := q.y
+	run(sim, 20)
+	check(absf(q.y - hang) < 0.01, "letting go holds you on the ladder")
+
+	# Spikes: touching them hurts and throws you up, credited to whoever placed them.
+	sim = floor_sim()
+	p = sim.players[0]
+	q = sim.players[1]
+	sim.world.set_tile(floori(q.centre().x), 20, World.SPIKES)
+	sim.world.owners[Vector2i(floori(q.centre().x), 20)] = 0
+	run(sim, 2)
+	check(q.damage == Cfg.SPIKE_DAMAGE and q.vy < 0 and q.last_hit_by == 0, "spikes hurt (%.0f%%), launch, and credit the placer" % q.damage)
+
+	# Bumper: running into one flings you back.
+	sim = floor_sim()
+	q = sim.players[1]
+	sim.world.set_tile(floori(q.x + Cfg.PLAYER_W) + 1, 19, World.BUMPER)
+	var x1 := q.x
+	run(sim, 20, [IDLE, with({"right": true})])
+	run(sim, 15)
+	check(q.x < x1 - 1.5, "a bumper flings you back (%.2f tiles)" % (x1 - q.x))
+
+	# Glue: slow walking and weak jumps.
+	sim = floor_sim()
+	q = sim.players[1]
+	for x in range(30, 50):
+		sim.world.set_tile(x, 20, World.GLUE)
+	x1 = q.x
+	run(sim, 30, [IDLE, with({"left": true})])
+	var glued_walk := x1 - q.x
+	sim = floor_sim()
+	q = sim.players[1]
+	x1 = q.x
+	run(sim, 30, [IDLE, with({"left": true})])
+	check(glued_walk < (x1 - q.x) * 0.5, "glue slows walking (%.2f vs %.2f)" % [glued_walk, x1 - q.x])
+
+	# Trapdoor: drops away under an enemy, not under its owner.
+	sim = floor_sim()
+	p = sim.players[0]
+	q = sim.players[1]
+	var under_p := Vector2i(floori(p.centre().x), 20)
+	var under_q := Vector2i(floori(q.centre().x), 20)
+	for t: Vector2i in [under_p, under_q]:
+		sim.world.set_tile(t.x, t.y, World.TRAPDOOR)
+		sim.world.owners[t] = 0
+	run(sim, int(Cfg.TRAP_DROP * 60) + 5)
+	check(sim.world.get_tile(under_q.x, under_q.y) == World.EMPTY, "a trapdoor drops under an enemy")
+	check(sim.world.get_tile(under_p.x, under_p.y) == World.TRAPDOOR, "a trapdoor holds its owner")
+
+	# Healing spring: heals anyone close, until used up.
+	sim = floor_sim()
+	q = sim.players[1]
+	q.damage = 80.0
+	var spring := Vector2i(floori(q.centre().x) + 1, 19)
+	sim.world.set_tile(spring.x, spring.y, World.HEAL)
+	run(sim, 60)
+	check(q.damage < 80.0 - Cfg.HEAL_RATE * 0.9, "a healing spring heals (%.1f%% left)" % q.damage)
+	run(sim, 60 * 8)
+	check(q.damage <= 80.0 - Cfg.HEAL_TOTAL + 0.01 and sim.world.get_tile(spring.x, spring.y) == World.EMPTY,
+		"it heals HEAL_TOTAL then is used up (%.1f%%)" % q.damage)
+
+	# Fake block: looks like dirt, but you fall through it.
+	sim = floor_sim()
+	q = sim.players[1]
+	for x in range(36, 45):
+		sim.world.set_tile(x, 20, World.FAKE)
+	run(sim, 30)
+	check(q.y > 20.0, "you fall through a fake block")
+	print("items: ore, placing + reach, steel, fan, updraft, magnet, bounce pad, ladder, spikes, bumper, glue, trapdoor, heal, fake, mine, turret OK")
 
 
 ## Two players side by side on the test floor, p (player 0) at x facing right, q right next to it.

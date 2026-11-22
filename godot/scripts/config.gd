@@ -38,13 +38,16 @@ const REACH := 2.5                # mouse targeting: tiles from player centre to
 const BLOCK_REACH := 4.5          # placing special blocks reaches further
 # Seconds of holding "mine" to break a tile. Int keys match World's enum (config can't use
 # World's names): DIRT=1, STONE=2, PLACED=3, COPPER=4, CRYSTAL=5, SAND=6, ICE=7, SLIME=8,
-# LAVA=9 (can't be mined), TNT=10, STEEL=11, FAN_L=12, FAN_R=13, MAGNET=14, TURRET=15.
+# LAVA=9 (can't be mined), TNT=10, STEEL=11, FAN_L=12, FAN_R=13, MAGNET=14, TURRET=15, BOUNCE=16,
+# SPIKES=17, TRAPDOOR=18, LADDER=19, FAN_U=20, BUMPER=21, GLUE=22, HEAL=23, FAKE=24.
 const MINE_TIME := {1: 0.22, 2: 0.45, 3: 0.18, 4: 0.55, 5: 0.65, 6: 0.12, 7: 0.35, 8: 0.25, 10: 0.3,
-	11: 1.6, 12: 0.4, 13: 0.4, 14: 0.4, 15: 0.5}
+	11: 1.6, 12: 0.4, 13: 0.4, 14: 0.4, 15: 0.5, 16: 0.3, 17: 0.4, 18: 0.3, 19: 0.15, 20: 0.4,
+	21: 0.5, 22: 0.3, 23: 0.5, 24: 0.1}
 const PLACE_COOLDOWN := 0.12
 const CARRY_LIMIT := 15           # dirt + stone
 const ORE_LIMIT := 9
 const SLOTS := 3
+const MENU_DELAY := 0.2           # hold craft this long to open the crafting menu (a tap quick-crafts)
 
 # Map generation
 const TOP_ROW := 9
@@ -107,6 +110,18 @@ const MAGNET_PULL := 28.0         # tiles/s^2 at the magnet, fading to 0 at the 
 const TURRET_RANGE := 12.0        # a turret shoots at the nearest enemy within this range, in about its row
 const TURRET_ROWS := 3.0          # ...up to this many tiles above or below it
 const TURRET_RELOAD := 1.4
+const SPIKE_DAMAGE := 10.0        # touching spikes: this much damage %...
+const SPIKE_LAUNCH := 13.0        # ...and thrown up and away at this speed
+const TRAP_DROP := 0.25           # a trapdoor an enemy stands on falls away this long later
+const CLIMB_SPEED := 6.0          # on a ladder: up/jump climbs, down slides, nothing holds on
+const UPDRAFT_SPEED := 10.0       # an updraft fan lifts players above it toward this speed (FAN_RANGE tiles)
+const UPDRAFT_ACCEL := 110.0
+const BUMPER_KNOCK := 17.0        # running into a bumper flings you back at this speed
+const GLUE_SLOW := 0.35           # standing on glue: walk at this fraction of normal speed...
+const GLUE_JUMP := 0.6            # ...and jump at this fraction
+const HEAL_RANGE := 1.8           # standing this close to a healing spring...
+const HEAL_RATE := 8.0            # ...takes this much damage % off per second...
+const HEAL_TOTAL := 50.0          # ...until it has healed this much, then it's used up
 const MINE_TRIGGER := 1.6         # placed TNT goes off when an enemy gets this close to it...
 const MINE_FUSE := 0.35           # ...this long later
 const PUSH_SPEED := 22.0          # turret shots
@@ -130,7 +145,7 @@ const PUBLIC_SERVER := "arena.tylergunn.me"   # "Play online" on the title scree
 # Game version. Online, the host and every player must match exactly: it's sent as the
 # WebSocket subprotocol, so a different version can't even connect (no silent breakage).
 # The release workflow checks that the git tag (vX.Y.Z) matches this.
-const GAME_VERSION := "0.7.1"
+const GAME_VERSION := "0.8.0"
 const NET_PROTOCOL := "arena-" + GAME_VERSION
 
 const PLAYER_COLORS := [Color(1.0, 0.42, 0.42), Color(0.31, 0.66, 1.0), Color(1.0, 0.82, 0.25), Color(0.72, 0.48, 1.0)]
