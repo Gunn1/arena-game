@@ -13,7 +13,7 @@ Made with [Godot 4.7](https://godotengine.org) in `godot/`. The original Python/
 
 One player hosts and runs the game; everyone else joins and sends their inputs (WebSockets, port 7777).
 
-**Quickest:** press **Enter** on the title screen to join the public server (arena.tylergunn.me). Everyone in its lobby can press Enter to start once 2+ are in.
+**Quickest:** press **Enter** on the title screen to join the public server (arena.tylergunn.me). Everyone in its lobby can press Enter to start once 2+ are in. If a match is already running and there's room, you join it and spawn next round.
 
 Or play with friends on your own machine:
 
@@ -43,7 +43,7 @@ To run an always-on server that browser players can join at `wss://arena.<your-d
 | Local P2 | J / L | I | K = down | hold U | O | 7 / 8 / 9 | H |
 | Controller | left stick / d-pad | A | right stick | hold RT | LT | X / Y / B | RB |
 
-- **Fighting:** click to swing. Aim assist: it hits anyone within reach roughly where you aim (70° either way), and a click during cooldown still swings when it's ready. Each hit adds damage %; the higher it is, the farther hits launch you. Fall out within 4 s of a hit and the hitter gets the KO.
+- **Fighting:** click to swing. Aim assist: it hits anyone within reach roughly where you aim (70° either way), and a click during cooldown still swings when it's ready. Each hit adds damage %; the higher it is, the farther hits launch you. Fall out within 4 s of a hit and the hitter gets the KO, plus half your copper and crystal.
 - **The zone:** the arena crumbles from both edges toward the middle (starts after 10 s, about 90 s to close).
 - **Crafting:** tap craft to make the most valuable special block you can afford (your HUD shows which). Hold craft to open the menu: pick with the mouse, wheel, or left/right, and let go to craft it. Item keys place blocks up to 4.5 tiles away.
 - **Wall jump:** jump while a wall is beside your upper body in the air; not off the same side twice in a row. Just above the floor, jump waits for the landing instead.
@@ -64,6 +64,18 @@ Every round picks a biome and an arena shape (shown in the round banner).
 
 Any biome can have TNT: mine it (or blow it up) and it explodes a second later, credited to whoever set it off. Shapes: islands, mountain, towers with bridges, caves.
 
+## Round events
+
+After the first round of a match, each round has a 40% chance of an event (shown in the round banner):
+
+| Event | Does |
+|---|---|
+| Low Gravity | floaty jumps, and hits launch you farther |
+| Sudden Death | everyone starts at 100% |
+| Fast Zone | the edges close twice as fast |
+| Gold Rush | 3x the ore |
+| Meteor Shower | lit TNT falls from the sky every few seconds |
+
 ## Special blocks
 
 Crafted into your 3 slots, placed with the item keys. Fans, magnets, bounce pads, spikes, bumpers, glue and springs work on everyone, you included; mines, turrets and trapdoors ignore whoever placed them.
@@ -83,9 +95,9 @@ Crafted into your 3 slots, placed with the item keys. Fans, magnets, bounce pads
 | Bumper | 2 stone, 2 copper | 2 | flings back anyone who runs into it |
 | Healing Spring | 1 copper, 1 crystal | 1 | heals anyone nearby, 50% total |
 | Mine | 1 stone, 1 copper, 1 crystal | 2 | TNT that blows when an enemy gets close |
-| Turret | 2 stone, 1 copper, 1 crystal | 1 | shoots enemies within 12 tiles |
+| Turret | 2 stone, 1 copper, 1 crystal | 1 | shoots enemies within 12 tiles; breaks after 8 shots |
 
-Dirt and stone share a 15-block carry limit. Copper (orange specks) and crystal (cyan, deeper) are ores; every spawn gets at least 2 copper within 4 tiles and 1 crystal within 6, the same for everyone.
+Dirt and stone share a 15-block carry limit; when full, mined stone replaces a dirt. Copper (orange specks) and crystal (cyan, deeper) are ores; every spawn gets at least 2 copper within 4 tiles and 1 crystal within 6, the same for everyone.
 
 ## Working on it
 

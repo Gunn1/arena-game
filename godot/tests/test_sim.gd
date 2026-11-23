@@ -32,6 +32,8 @@ func _init() -> void:
 	test_hitstop()
 	test_rewind()
 	test_zone()
+	test_events()
+	test_regressions()
 	test_matches()
 	print("all good" if failures == 0 else "%d FAILURES" % failures)
 	quit(0 if failures == 0 else 1)
@@ -430,8 +432,9 @@ func has_sound(sim: GameSim, snd: String) -> bool:
 
 ## Jump from the test floor, holding jump for `hold` frames.
 ## Returns [rise in tiles, frames going up, frames coming back down].
-func jump_arc(hold: int) -> Array:
+func jump_arc(hold: int, event := "none") -> Array:
 	var sim := floor_sim()
+	sim.world.event = event
 	var p: Player = sim.players[0]
 	run(sim, 5)
 	var ground := p.y
@@ -835,6 +838,16 @@ func test_items() -> void:
 		sim.update(Cfg.DT, [IDLE, IDLE])
 		hit = hit or q.damage > 0
 	check(hit, "a turret shoots an enemy in range")
+	var tpos := Vector2i(-1, -1)
+	for d: Vector2i in sim.world.devices:
+		if sim.world.devices[d] == World.TURRET:
+			tpos = d
+	for i in int(Cfg.TURRET_RELOAD * 60 * (Cfg.TURRET_SHOTS + 1)):
+		q.x = 24.0
+		q.y = 20.0 - Cfg.PLAYER_H
+		q.damage = 0.0
+		sim.update(Cfg.DT, [IDLE, IDLE])
+	check(sim.world.get_tile(tpos.x, tpos.y) == World.EMPTY, "a turret breaks after %d shots" % Cfg.TURRET_SHOTS)
 	# Updraft: a fan placed in your own column blows up and lifts players above it.
 	sim = floor_sim()
 	p = sim.players[0]
@@ -1066,6 +1079,15 @@ func test_fighting() -> void:
 	run_until_dead(sim, q, 300)
 	check(not q.alive, "a heavy hit at the edge kills")
 	check(p.kos == 1 and q.falls == 0, "KO goes to the hitter, not a fall")
+	sim = fight_sim(150.0, 46.0)
+	p = sim.players[0]
+	q = sim.players[1]
+	q.inv["copper"] = 3
+	q.inv["crystal"] = 1
+	sim.update(Cfg.DT, [with({"mine": true}), IDLE])
+	run_until_dead(sim, q, 300)
+	check(p.inp_count("copper") == 2 and p.inp_count("crystal") == 1, "a KO takes half the loser's ore, rounded up (%s)" % str(p.inv))
+	check(feed_has(sim, "+2 copper"), "the feed shows the loot")
 	check(feed_has(sim, "knocked out"), "feed shows the KO")
 
 	# Walking off with nobody's help is a plain fall.
@@ -1205,6 +1227,140 @@ func test_zone() -> void:
 	check(w.block_count() == 0, "everything crumbles once the zone closes (%d left)" % w.block_count())
 	print("zone: %d blocks; at %.0fs edges gone, middle has %d, zone %.1f..%.1f; empty by %.1fs; building outside warns OK"
 		% [start_blocks, half, middle, zl, zr, done_at])
+
+
+func test_events() -> void:
+	# The first round is always plain; later rounds sometimes get an event.
+	var seen := {}
+	for i in 40:
+		var sim := GameSim.new()
+		sim.start_match(2)
+		check(sim.world.event == "none", "round 1 never has an event")
+		for r in 5:
+			sim.new_round()
+			seen[sim.world.event] = true
+	check(seen.has("none") and seen.size() == Cfg.EVENTS.size() + 1, "later rounds get every event and none (%s)" % str(seen.keys()))
+
+	# Sudden death: everyone starts the round at 100%.
+	var sd := GameSim.new()
+	sd.force_event = "sudden_death"
+	sd.start_match(3)
+	check(sd.players.all(func(p): return p.damage == Cfg.SUDDEN_DEATH_DAMAGE), "sudden death: everyone at 100%")
+
+	# Low gravity: the same held jump goes clearly higher.
+	var normal: float = jump_arc(90)[0]
+	var low: float = jump_arc(90, "low_gravity")[0]
+	check(low > normal * 1.4, "low gravity jumps higher (%.2f vs %.2f tiles)" % [low, normal])
+
+	# Fast zone: the edges are further in at the same moment.
+	var a := World.new()
+	a.generate(3, 2)
+	var b := World.new()
+	b.event = "fast_zone"
+	b.generate(3, 2)
+	a.elapsed = Cfg.ZONE_GRACE + 30.0
+	b.elapsed = Cfg.ZONE_GRACE + 30.0
+	check(b.zone_progress() > a.zone_progress() * 1.8, "fast zone closes faster (%.1f vs %.1f cols)" % [b.zone_progress(), a.zone_progress()])
+
+	# Gold rush: the same map seed has far more ore.
+	var ore := func(w: World) -> int:
+		var n := 0
+		for t in w.grid:
+			if t == World.COPPER or t == World.CRYSTAL:
+				n += 1
+		return n
+	var rush := World.new()
+	rush.event = "gold_rush"
+	rush.generate(3, 2)
+	check(ore.call(rush) > ore.call(a) * 2, "gold rush: more ore (%d vs %d)" % [ore.call(rush), ore.call(a)])
+
+	# Meteor shower: TNT falls from the sky and goes off once it lands.
+	var ms := GameSim.new()
+	ms.force_event = "meteors"
+	ms.start_match(2)
+	ms.state = "play"
+	var fell := 0
+	var blew := false
+	for f in int((Cfg.METEOR_START + Cfg.METEOR_EVERY * 2) * 60):
+		ms.update(Cfg.DT, [IDLE, IDLE])
+		fell = maxi(fell, ms.bombs.filter(func(b): return b.get("meteor", false)).size())
+		blew = blew or ms.world.broken.any(func(x): return x[3] == "bomb")
+		ms.world.broken.clear()
+		ms.events.clear()
+	check(fell > 0, "meteors fall")
+	var mc := GameSim.new()
+	mc.force_event = "meteors"
+	mc.start_match(2)
+	mc.state = "play"
+	mc.meteor_t = 0.0
+	mc.update(Cfg.DT, [IDLE, IDLE])
+	var snap := mc.snapshot()
+	var view := GameSim.new()
+	view.apply_snapshot(snap)
+	check(view.bombs.size() == 1 and GameSim.falling_meteor(view.bombs[0]), "clients know a meteor is falling")
+	mc.bombs[0]["x"] = mc.world.spawns[0].x + 0.5      # over a spawn: always ground below
+	var land := mc.meteor_landing(mc.bombs[0])
+	check(land > 0.0 and mc.world.solid(floori(mc.bombs[0]["x"]), int(land)), "the landing mark is on solid ground (row %.0f)" % land)
+	check(blew, "a meteor that lands blows up blocks")
+
+	# Clients get the event with the map.
+	var client := GameSim.new()
+	var host := GameSim.new()
+	host.force_event = "low_gravity"
+	host.start_match(2)
+	client.apply_grid(host.grid_message())
+	check(client.world.event == "low_gravity", "the event reaches clients with the map")
+	print("events: round 1 plain, all %d events roll, sudden death, low gravity (%.2f vs %.2f), fast zone, gold rush, sent to clients OK"
+		% [Cfg.EVENTS.size(), low, normal])
+
+
+func test_regressions() -> void:
+	# A player who left stays out: no idle body respawns next round.
+	var sim := GameSim.new()
+	sim.start_match(3)
+	sim.players[2].alive = false
+	sim.players[2].gone = true
+	sim.new_round()
+	check(not sim.players[2].alive and sim.alive_count() == 2, "a slot whose player left isn't respawned")
+
+	# A remote swing right after a mid-match join (history has fewer players) doesn't break.
+	sim = GameSim.new()
+	sim.start_match(2)
+	sim.state = "play"
+	run(sim, 10)
+	var joiner := Player.new(2)
+	joiner.alive = false
+	sim.players.append(joiner)
+	sim.view = float(sim.tick - 5)
+	check(sim.swing_targets(sim.players[0]) is Array, "swing lookup survives a player added mid-round")
+	check(sim.pos_at(2, float(sim.tick - 5)) == Vector2(joiner.x, joiner.y), "no history yet: where they are now")
+	sim.view = -1.0
+
+	# A block placed outside the arena during the grace period still crumbles.
+	var w := World.new()
+	w.generate(1, 2)
+	w.update(Cfg.DT)
+	w.set_tile(w.arena_left - 1, 10, World.PLACED, "place")
+	check(w.warnings.has(Vector2i(w.arena_left - 1, 10)), "building outside the arena in the grace period crumbles")
+
+	# KO loot never goes past ORE_LIMIT.
+	var a := Player.new(0)
+	var b := Player.new(1)
+	a.inv = {"dirt": 0, "stone": 0, "copper": Cfg.ORE_LIMIT - 1, "crystal": 0}
+	b.inv = {"dirt": 0, "stone": 0, "copper": 8, "crystal": 0}
+	GameSim.new()._loot(a, b)
+	check(a.inp_count("copper") == Cfg.ORE_LIMIT and b.inp_count("copper") == 7, "loot stops at ORE_LIMIT (%s / %s)" % [str(a.inv), str(b.inv)])
+	# Full of blocks: mined stone replaces a dirt; mined dirt is lost.
+	var c := Player.new(0)
+	c.inv = {"dirt": Cfg.CARRY_LIMIT, "stone": 0, "copper": 0, "crystal": 0}
+	c.collect(World.STONE)
+	check(c.inp_count("stone") == 1 and c.inp_count("dirt") == Cfg.CARRY_LIMIT - 1, "full: stone swaps out a dirt")
+	c.collect(World.DIRT)
+	check(c.blocks() == Cfg.CARRY_LIMIT and c.inp_count("stone") == 1, "full: dirt is dropped")
+	c.inv = {"dirt": 0, "stone": Cfg.CARRY_LIMIT, "copper": 0, "crystal": 0}
+	c.collect(World.STONE)
+	check(c.inp_count("stone") == Cfg.CARRY_LIMIT, "full of stone: more stone is dropped")
+	print("regressions: left players stay out, rewind after join, outside-arena grace build, loot cap, stone swaps dirt when full OK")
 
 
 func test_matches() -> void:

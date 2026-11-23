@@ -10,6 +10,8 @@ var projectiles: Array = []       # turret shots: {x, y, vx, vy, dist, owner} (o
 var bombs: Array = []             # lit TNT: {x, y, vx, vy, fuse, owner}
 var turret_cd := {}               # Vector2i -> seconds until that turret can shoot again
 var heal_left := {}               # Vector2i -> damage % a healing spring can still take off
+var meteor_t := 0.0               # meteor shower: seconds until the next one falls
+var turret_shots := {}            # Vector2i -> shots a turret has left (it breaks after the last)
 # Crafting menu geometry in screen pixels, shared by drawing (main.gd) and mouse hover.
 const MENU_COLS := 7
 const MENU_BOX := 30
@@ -29,6 +31,7 @@ var hitstop := 0.0                # > 0: the whole game is frozen for a moment a
 var freeze_on_hit := true
 var hit_flash := 0.0              # > 0: draw the impact (hit player enlarged, white flash); decays
 var rng := RandomNumberGenerator.new()
+var force_event := ""             # tests: every round gets this event ("none": never an event)
 # Lag compensation (host): where everyone was over the last REWIND_KEEP ticks, so a remote
 # player's swing is tested against what they saw. view = the tick the input being applied was
 # drawn at (-1: no rewind, e.g. local players and the host's own).
@@ -72,6 +75,7 @@ func start_match(count: int) -> void:
 
 func new_round() -> void:
 	round_no += 1
+	world.event = _roll_event()
 	var g0 := Time.get_ticks_usec()
 	world.generate(rng.randi(), players.size())
 	var g_ms := (Time.get_ticks_usec() - g0) / 1000
@@ -79,14 +83,30 @@ func new_round() -> void:
 		print("[perf] map generation took %d ms" % g_ms)
 	for i in players.size():
 		players[i].spawn(world.spawns[i].x, world.spawns[i].y)
+		players[i].alive = not players[i].gone
+		if world.event == "sudden_death":
+			players[i].damage = Cfg.SUDDEN_DEATH_DAMAGE
 	projectiles.clear()
 	bombs.clear()
 	turret_cd.clear()
+	turret_shots.clear()
 	heal_left.clear()
+	meteor_t = Cfg.METEOR_START
 	past.clear()                                 # everyone respawned: no rewinding into last round
 	round_time = 0.0
 	state = "intro"
 	timer = Cfg.ROUND_INTRO
+
+
+## The first round of a match is always plain; later ones get an event EVENT_CHANCE of the time.
+## force_event (tests): always this one ("none" for never).
+func _roll_event() -> String:
+	if force_event != "":
+		return force_event
+	if round_no <= 1 or rng.randf() >= Cfg.EVENT_CHANCE:
+		return "none"
+	var keys: Array = Cfg.EVENTS.keys()
+	return keys[rng.randi_range(0, keys.size() - 1)]
 
 
 func alive_count() -> int:
@@ -145,6 +165,7 @@ func update(dt: float, inputs: Array) -> void:
 	_log_positions()
 	_update_devices(dt)
 	_update_projectiles(dt)
+	_meteors(dt)
 	_update_bombs(dt)
 	_light_tnt()
 
@@ -168,7 +189,7 @@ func _on_death(p: Player) -> void:
 	if p.last_hit_by >= 0 and round_time - p.last_hit_at <= Cfg.KILL_CREDIT:
 		var killer: Player = players[p.last_hit_by]
 		killer.kos += 1
-		add_feed("P%d knocked out P%d" % [killer.index + 1, p.index + 1])
+		add_feed("P%d knocked out P%d%s" % [killer.index + 1, p.index + 1, _loot(killer, p)])
 	else:
 		p.falls += 1
 		add_feed("P%d fell" % (p.index + 1))
@@ -179,6 +200,18 @@ func _on_death(p: Player) -> void:
 	burst(c, Color.WHITE, 12, 8.0, 0.5, 3, 4.0)
 	sound("death")
 	shake = 0.35
+
+
+## A KO hands the killer part of the loser's ore (rounded up). Returns it as feed text.
+func _loot(killer: Player, loser: Player) -> String:
+	var got := ""
+	for m: String in ["copper", "crystal"]:
+		var n := mini(ceili(loser.inp_count(m) * Cfg.KO_LOOT), Cfg.ORE_LIMIT - killer.inp_count(m))
+		if n > 0:
+			killer.inv[m] = killer.inp_count(m) + n
+			loser.inv[m] -= n
+			got += " +%d %s" % [n, m]
+	return got
 
 
 func player_in_tile(tx: int, ty: int) -> bool:
@@ -196,8 +229,10 @@ func swing_targets(p: Player) -> Array:
 	var c := p.centre()
 	var out := []
 	for o: Player in players:
+		if not o.alive or o == p:
+			continue
 		var at := Vector2(o.x, o.y) if view < 0.0 else pos_at(o.index, view)
-		if o.alive and o != p and swing_reaches(c, p.aim_vec, at):
+		if swing_reaches(c, p.aim_vec, at):
 			out.append(o)
 	return out
 
@@ -228,7 +263,7 @@ func _log_positions() -> void:
 func pos_at(i: int, at: float) -> Vector2:
 	var now := Vector2(players[i].x, players[i].y)
 	at = clampf(at, tick - REWIND_MAX, tick)
-	if past.is_empty() or at >= float(past[-1][0]):
+	if past.is_empty() or at >= float(past[-1][0]) or i >= past[0][1].size():
 		return now
 	if at <= float(past[0][0]):
 		return past[0][1][i]
@@ -269,6 +304,8 @@ func hit_player(target: Player, attacker: Player, dir: Vector2, dmg: float, base
 	target.kvx = dir.x * knock
 	target.vy = dir.y * knock
 	target.on_ground = false
+	target.coyote = 0.0                       # a buffered jump mustn't replace the launch
+	target.jump_buffer = 0.0
 	target.stun = Cfg.STUN_BASE + knock * Cfg.STUN_PER_KNOCK
 	target.hurt_t = 0.15
 	target.hit_lock = Cfg.HIT_LOCK
@@ -345,6 +382,8 @@ func use_item(p: Player, key: String) -> bool:
 	world.set_tile(t.x, t.y, tile, "place")
 	world.owners[t] = p.index
 	turret_cd[t] = Cfg.TURRET_RELOAD * 0.5
+	turret_shots[t] = Cfg.TURRET_SHOTS
+	heal_left.erase(t)                           # a spring placed where an old one stood starts full
 	burst(Vector2(t) + Vector2(0.5, 0.5), Items.block_color(tile), 8, 3.0, 0.3, 3)
 	sound("place")
 	return true
@@ -375,6 +414,12 @@ func _update_devices(dt: float) -> void:
 			projectiles.append({"x": from.x + u.x * 0.7, "y": from.y + u.y * 0.7, "vx": u.x, "vy": u.y, "dist": 0.0, "owner": owner})
 			turret_cd[pos] = Cfg.TURRET_RELOAD
 			sound("push")
+			var left: int = turret_shots.get(pos, Cfg.TURRET_SHOTS) - 1
+			turret_shots[pos] = left
+			if left <= 0:
+				world.set_tile(pos.x, pos.y, World.EMPTY, "used")
+				turret_shots.erase(pos)
+				turret_cd.erase(pos)
 	# Trapdoors drop away under enemies; healing springs heal anyone close until used up.
 	for pos: Vector2i in world.devices.keys():
 		var tile: int = world.devices[pos]
@@ -464,6 +509,8 @@ func _update_bombs(dt: float) -> void:
 			if world.solid(floori(nx), floori(ny)):
 				b["vx"] = 0.0                    # sticks to whatever it hits
 				b["vy"] = 0.0
+				if b.get("meteor", false):
+					b["fuse"] = minf(b["fuse"], Cfg.METEOR_FUSE)
 			else:
 				b["x"] = nx
 				b["y"] = ny
@@ -471,6 +518,34 @@ func _update_bombs(dt: float) -> void:
 			continue                             # fell out of the map: a dud
 		keep.append(b)
 	bombs = keep
+
+
+## Meteor shower: lit TNT drops from the sky somewhere inside the zone every so often and
+## goes off soon after it lands. It belongs to nobody.
+func _meteors(dt: float) -> void:
+	if world.event != "meteors" or state != "play":
+		return
+	meteor_t -= dt
+	if meteor_t > 0:
+		return
+	meteor_t = Cfg.METEOR_EVERY
+	var x := rng.randf_range(world.zone_left + 1.0, world.zone_right - 1.0)
+	bombs.append({"x": x, "y": 0.5, "vx": 0.0, "vy": Cfg.METEOR_SPEED, "fuse": 10.0, "owner": -1, "meteor": true})
+	sound("push")
+
+
+## A meteor still in the air (drawn with a marker where it will land).
+static func falling_meteor(b: Dictionary) -> bool:
+	return b.get("falling", b.get("meteor", false) and b["vy"] != 0.0)
+
+
+## Where a falling meteor will land: the top of the first solid tile below it, or -1 if none.
+func meteor_landing(b: Dictionary) -> float:
+	var tx := floori(b["x"])
+	for ty in range(maxi(0, floori(b["y"])), Cfg.ROWS):
+		if world.solid(tx, ty):
+			return float(ty)
+	return -1.0
 
 
 ## TNT that was mined, blasted or crumbled becomes a bomb stuck in place with a short fuse,
@@ -525,7 +600,7 @@ func snapshot(ack_list: Array = []) -> Dictionary:
 			p.vel_x, p.vy, p.on_ground, p.mine_target, p.mine_progress, p.mouse, p.land_t, p.aim_vec, p.swing_dir])
 	return {"tick": tick, "st": state, "tm": timer, "rd": round_no, "msg": message, "sh": shake, "hs": hitstop, "hf": hit_flash,
 		"p": ps, "ch": world.changes.duplicate(), "pr": projectiles.map(func(x): return [x["x"], x["y"], x["owner"]]),
-		"bo": bombs.map(func(x): return [x["x"], x["y"], x["fuse"], x["owner"]]),
+		"bo": bombs.map(func(x): return [x["x"], x["y"], x["fuse"], x["owner"], falling_meteor(x)]),
 		"ev": events.duplicate(),
 		"zl": world.zone_left, "zr": world.zone_right, "al": world.arena_left, "ar": world.arena_right,
 		"fd": feed.duplicate(true), "rt": round_time, "ns": ns, "ack": ack}
@@ -533,7 +608,7 @@ func snapshot(ack_list: Array = []) -> Dictionary:
 
 func grid_message() -> Dictionary:
 	return {"g": world.grid, "v": world.version, "wa": world.warnings.duplicate(),
-		"al": world.arena_left, "ar": world.arena_right, "bi": world.biome, "sp": world.shape}
+		"al": world.arena_left, "ar": world.arena_right, "bi": world.biome, "sp": world.shape, "et": world.event}
 
 
 func apply_grid(d: Dictionary) -> void:
@@ -543,6 +618,7 @@ func apply_grid(d: Dictionary) -> void:
 	world.arena_right = d["ar"]
 	world.biome = d.get("bi", "meadow")
 	world.shape = d.get("sp", "islands")
+	world.event = d.get("et", "none")
 	world.rebuild_devices()
 	world.lit.clear()                            # only the host lights TNT
 	world.broken.clear()
@@ -591,5 +667,5 @@ func apply_snapshot(d: Dictionary, skip_index := -1) -> Array:
 			"t": world.set_tile(c[1], c[2], c[3], c[4])
 			"w": world.warn(c[1], c[2])
 	projectiles = d["pr"].map(func(a): return {"x": a[0], "y": a[1], "owner": a[2]})
-	bombs = d["bo"].map(func(a): return {"x": a[0], "y": a[1], "fuse": a[2], "owner": a[3]})
+	bombs = d["bo"].map(func(a): return {"x": a[0], "y": a[1], "fuse": a[2], "owner": a[3], "falling": a[4]})
 	return d["ev"]

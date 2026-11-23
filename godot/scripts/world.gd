@@ -21,7 +21,8 @@ var spawns: Array = []            # Vector2i(col, ground_row) per player, left t
 var spread := 0.0                 # how uneven the spawns are (0 = identical ground nearby)
 var warnings := {}                # Vector2i -> seconds until it breaks
 var elapsed := 0.0
-var arena_left := 0               # the arena is the columns [arena_left, arena_right)
+var event := "none"               # this round's event (Cfg.EVENTS key), set by the sim before generate()
+var arena_left := 0              # the arena is the columns [arena_left, arena_right)
 var arena_right := COLS
 var zone_left := 0.0              # the zone's edges; everything outside crumbles
 var zone_right := float(COLS)
@@ -80,8 +81,9 @@ func set_tile(x: int, y: int, tile: int, cause := "mine") -> void:
 		devices.erase(pos)
 	if record:
 		changes.append(["t", x, y, tile, cause])
-	if tile != EMPTY and zone_started() and (x < next_left or x > next_right):
-		warn(x, y)                                   # built outside the zone: it crumbles too
+	# Built outside the zone (or outside the arena, even during the grace period): it crumbles too.
+	if tile != EMPTY and (x < next_left or x > next_right):
+		warn(x, y)
 	if tile == EMPTY:
 		if cause != "sand":                          # falling sand just moves: no debris
 			broken.append([x, y, old, cause])
@@ -135,8 +137,9 @@ func zone_started() -> bool:
 func zone_progress() -> float:
 	var t := maxf(0.0, elapsed - Cfg.ZONE_GRACE)
 	var half := (arena_right - arena_left) / 2.0
-	var v0 := half / (2.0 * Cfg.ZONE_CLOSE_TIME)
-	var accel := 2.0 * v0 / Cfg.ZONE_CLOSE_TIME
+	var close := Cfg.ZONE_CLOSE_TIME * (Cfg.FAST_ZONE if event == "fast_zone" else 1.0)
+	var v0 := half / (2.0 * close)
+	var accel := 2.0 * v0 / close
 	return minf(half, v0 * t + 0.5 * accel * t * t)
 
 
@@ -571,10 +574,11 @@ func _pick_spawns(g: PackedByteArray, players: int) -> Array:
 
 ## Copper through the stone and buried dirt, crystal in the deeper stone.
 func _add_ores(g: PackedByteArray) -> void:
+	var rush := Cfg.GOLD_RUSH if event == "gold_rush" else 1.0
 	for y in ROWS:
 		for x in COLS:
 			var tile := g[y * COLS + x]
-			var r := rng.randf()
+			var r := rng.randf() / rush
 			if tile == STONE:
 				if r < 0.05:
 					g[y * COLS + x] = COPPER

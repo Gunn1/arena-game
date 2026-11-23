@@ -48,6 +48,7 @@ var item_cd := 0.0
 var held := {}                    # last frame's input, for "just pressed"
 var smooth := Vector2.ZERO        # online client, own player: drawn offset after a correction (eases to 0)
 var alive := true
+var gone := false                 # online: this slot's player left; it stays out until someone takes it
 # Fighting
 var damage := 0.0                 # Smash-style %: more damage = hits launch you farther
 var stun := 0.0                   # can't walk while > 0 (you're flying from a hit)
@@ -140,6 +141,9 @@ func collect(tile: int) -> void:
 	if m == "dirt" or m == "stone":
 		if blocks() < Cfg.CARRY_LIMIT:
 			inv[m] += 1
+		elif m == "stone" and inv["dirt"] > 0:
+			inv["dirt"] -= 1                         # full: stone is worth more, so it pushes out a dirt
+			inv["stone"] += 1
 	elif m != "":
 		inv[m] = mini(Cfg.ORE_LIMIT, inv[m] + 1)
 
@@ -446,7 +450,8 @@ func _move_body(dt: float, dx: int, inp: Dictionary, game) -> void:
 		jump_cut_ready = false
 		coyote = Cfg.COYOTE                          # step off the top and you can still jump
 	else:
-		vy = minf(vy + Cfg.GRAVITY * (Cfg.FALL_GRAVITY if vy > 0 else 1.0) * dt, Cfg.MAX_FALL)
+		var g := Cfg.GRAVITY * (Cfg.LOW_GRAVITY if world.event == "low_gravity" else 1.0)
+		vy = minf(vy + g * (Cfg.FALL_GRAVITY if vy > 0 else 1.0) * dt, Cfg.MAX_FALL)
 	_fields(dt, world)
 	var glued := on_ground and _standing_on(world, World.GLUE)
 
@@ -570,6 +575,8 @@ func _hurt(game, by, dmg: float, launch: Vector2) -> void:
 	kvx = launch.x
 	vy = launch.y
 	on_ground = false
+	coyote = 0.0
+	jump_buffer = 0.0
 	jump_cut_ready = false
 
 

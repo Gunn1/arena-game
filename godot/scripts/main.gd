@@ -792,16 +792,41 @@ func _on_peer_connected(id: int) -> void:
 	# A finished match with room to spare goes back to the lobby so newcomers can join.
 	if screen == "game" and sim.state == "match_over" and lobby_peers.size() + _offset() < Cfg.MAX_PLAYERS:
 		_back_to_lobby()
-	if screen != "lobby" or lobby_peers.size() + _offset() >= Cfg.MAX_PLAYERS:
-		var why := "That game is full (4 players)." if screen == "lobby" else "A match is in progress. Try again in a minute."
-		rpc_refused.rpc_id(id, why)
+	if lobby_peers.size() + _offset() >= Cfg.MAX_PLAYERS:
+		rpc_refused.rpc_id(id, "That game is full (%d players)." % Cfg.MAX_PLAYERS)
 		_kick_later(id)
 		return
 	lobby_peers.append(id)
 	remote[id] = {"queue": Prediction.ServerQueue.new(), "wheel": 0}
+	if screen == "game":
+		_join_mid_match(id)
+		return
 	_send_lobby()
 	if autostart and lobby_peers.size() >= autostart:
 		start_online_match()
+
+
+## Someone joined during a match: they watch until the next round, which spawns them.
+## They take the slot of a player who left, or a new one.
+func _join_mid_match(id: int) -> void:
+	var slot := sim.players.size()
+	for i in range(_offset(), sim.players.size()):
+		if peer_index.find_key(i) == null:
+			slot = i
+			break
+	var p := Player.new(slot)
+	p.alive = false
+	if slot < sim.players.size():
+		sim.players[slot] = p
+	else:
+		sim.players.append(p)
+	peer_index[id] = slot
+	for q: Player in sim.players:
+		if q.last_hit_by == slot:
+			q.last_hit_by = -1                       # the leaver's hits don't count for the newcomer
+	rpc_lobby.rpc_id(id, slot, lobby_peers.size() + _offset(), mode == "server", false)
+	rpc_grid.rpc_id(id, sim.grid_message())     # everyone else already has this round's map
+	sim.add_feed("P%d joined: in next round" % (slot + 1))
 
 
 func _on_peer_disconnected(id: int) -> void:
@@ -810,7 +835,8 @@ func _on_peer_disconnected(id: int) -> void:
 	lobby_peers.erase(id)
 	remote.erase(id)
 	if peer_index.has(id) and screen == "game":
-		sim.players[peer_index[id]].alive = false   # left mid-match: counts as out
+		sim.players[peer_index[id]].alive = false   # left mid-match: counts as out...
+		sim.players[peer_index[id]].gone = true     # ...and isn't respawned next round
 	peer_index.erase(id)
 	if mode == "server" and lobby_peers.is_empty() and screen != "lobby":
 		if print_hash:
@@ -845,7 +871,7 @@ func rpc_refused(why: String) -> void:
 
 func _send_lobby() -> void:
 	for k in lobby_peers.size():
-		rpc_lobby.rpc_id(lobby_peers[k], k + _offset(), lobby_peers.size() + _offset(), mode == "server")
+		rpc_lobby.rpc_id(lobby_peers[k], k + _offset(), lobby_peers.size() + _offset(), mode == "server", screen == "lobby")
 
 
 func _try_start() -> void:
@@ -871,6 +897,7 @@ func start_online_match() -> void:
 	sent_version = -1
 	screen = "game"
 	notice = ""
+	_send_lobby()                                # a rematch after someone left renumbers players
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -888,7 +915,14 @@ func rpc_input(state: Dictionary) -> void:
 
 
 @rpc("authority", "call_remote", "reliable")
-func rpc_lobby(you: int, count: int, is_dedicated: bool) -> void:
+func rpc_lobby(you: int, count: int, is_dedicated: bool, in_lobby: bool) -> void:
+	if in_lobby and screen == "game":
+		screen = "lobby"                         # the host went back to the lobby (someone new joined)
+		sim = GameSim.new()
+		sim.freeze_on_hit = false
+		predictor = Prediction.Client.new()
+		render_tick = -1.0
+		newest_tick = -1
 	my_index = you
 	lobby_size = count
 	dedicated = is_dedicated
@@ -1307,6 +1341,16 @@ func _draw_overlay() -> void:
 		overlay.draw_circle(pos, 3.0, Color(1.0, 0.45, 0.35))
 	for b in sim.bombs:
 		var pos := Vector2(b["x"], b["y"]) * CELL
+		if GameSim.falling_meteor(b):
+			var land := sim.meteor_landing(b)
+			if land >= 0.0:
+				# Where it will hit: a pulsing red mark on the ground and a faint line down to it.
+				var at := Vector2(b["x"], land) * CELL
+				var a := 0.55 + 0.35 * sin(time * 14.0)
+				overlay.draw_line(pos, at, Color(1.0, 0.3, 0.3, 0.18), 2.0)
+				overlay.draw_arc(at, CELL * 0.9, PI, TAU, 12, Color(1.0, 0.3, 0.3, a), 3.0)
+				overlay.draw_line(at + Vector2(-5, -10), at + Vector2(5, 0), Color(1.0, 0.3, 0.3, a), 3.0)
+				overlay.draw_line(at + Vector2(5, -10), at + Vector2(-5, 0), Color(1.0, 0.3, 0.3, a), 3.0)
 		overlay.draw_circle(pos, 7.0, Color(0.12, 0.12, 0.16))
 		overlay.draw_arc(pos, 7.0, 0, TAU, 16, _owner_color(b["owner"]), 2.0)
 		if int(b["fuse"] * (12 if b["fuse"] < 0.5 else 5)) % 2:
@@ -1613,7 +1657,11 @@ func _draw_game_hud() -> void:
 		hud.draw_rect(Rect2(0, 0, WIDTH, HEIGHT), Color(1, 1, 1, 0.08))
 
 	match sim.state:
-		"intro": _banner("Round %d - %s %s" % [sim.round_no, sim.world.biome.capitalize(), sim.world.shape.capitalize()], "Hit players to raise their %. Higher % = they fly farther. Knock them out!")
+		"intro":
+			var ev: Dictionary = Cfg.EVENTS.get(sim.world.event, {})
+			var ev_lines := [["Event: %s - %s" % [ev["name"], ev["help"]], DANGER]] if ev else []
+			_banner("Round %d - %s %s" % [sim.round_no, sim.world.biome.capitalize(), sim.world.shape.capitalize()],
+				"Hit players to raise their %. Higher % = they fly farther. Knock them out!", ev_lines)
 		"outro": _banner(sim.message, "   ".join(sim.players.map(func(p): return "P%d: %d" % [p.index + 1, p.wins])) + "   (first to %d)" % Cfg.ROUNDS_TO_WIN)
 		"match_over":
 			var sub := "Enter = rematch    Esc = menu"

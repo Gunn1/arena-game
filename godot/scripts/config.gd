@@ -61,6 +61,24 @@ const ORE_NEAR := {"copper": {"radius": 4, "min": 2}, "crystal": {"radius": 6, "
 # Biomes and arena shapes: each round the host picks one of each at random
 const BIOMES := ["meadow", "desert", "tundra", "volcano", "mushroom"]
 const SHAPES := ["islands", "mountain", "towers", "caves"]
+
+# Round events: a rule change some rounds get, shown in the round banner
+const EVENT_CHANCE := 0.4         # chance a round (not the first of a match) has an event
+const EVENTS := {
+	"low_gravity": {"name": "Low Gravity", "help": "floaty jumps, and hits launch you farther"},
+	"sudden_death": {"name": "Sudden Death", "help": "everyone starts at 100%"},
+	"fast_zone": {"name": "Fast Zone", "help": "the edges close twice as fast"},
+	"gold_rush": {"name": "Gold Rush", "help": "ore everywhere: craft fast"},
+	"meteors": {"name": "Meteor Shower", "help": "TNT falls from the sky"},
+}
+const LOW_GRAVITY := 0.6          # low gravity: gravity times this
+const SUDDEN_DEATH_DAMAGE := 100.0
+const FAST_ZONE := 0.5            # fast zone: the zone closes in this fraction of the time
+const GOLD_RUSH := 3.0            # gold rush: ore this many times as common
+const METEOR_START := 4.0         # meteor shower: the first falls this long after "go"...
+const METEOR_EVERY := 2.5         # ...then one this often...
+const METEOR_SPEED := 4.0         # ...starting this fast (gravity does the rest)...
+const METEOR_FUSE := 0.5          # ...and goes off this long after it lands
 const SAND_FALL := 0.12           # unsupported sand drops one tile this often
 const ICE_GRIP := 0.25            # on ice, walking speeds up and slows down at this fraction of normal
 const SLIME_MIN := 6.0            # landing on slime faster than this bounces you...
@@ -97,6 +115,7 @@ const STUN_PER_KNOCK := 0.015
 const STUN_DECAY := 1.2           # knockback fades this slowly while stunned (KNOCK_DECAY otherwise)
 const STUN_DRIFT := 0.35          # while stunned you can still steer this fraction of air control, at half speed
 const KILL_CREDIT := 4.0          # fall within this many seconds of a hit and the hitter gets the KO
+const KO_LOOT := 0.5              # a KO takes this share of the loser's copper and crystal
 const HITSTOP_BASE := 0.06        # the whole game freezes briefly on a hit: base + knock * per, capped
 const HITSTOP_PER_KNOCK := 0.003
 const HITSTOP_MAX := 0.14
@@ -112,6 +131,7 @@ const MAGNET_PULL := 28.0         # tiles/s^2 at the magnet, fading to 0 at the 
 const TURRET_RANGE := 12.0        # a turret shoots at the nearest enemy within this range, in about its row
 const TURRET_ROWS := 3.0          # ...up to this many tiles above or below it
 const TURRET_RELOAD := 1.4
+const TURRET_SHOTS := 8           # ...and breaks after this many shots
 const SPIKE_DAMAGE := 10.0        # touching spikes: this much damage %...
 const SPIKE_LAUNCH := 13.0        # ...and thrown up and away at this speed
 const TRAP_DROP := 0.25           # a trapdoor an enemy stands on falls away this long later
@@ -147,7 +167,7 @@ const PUBLIC_SERVER := "arena.tylergunn.me"   # "Play online" on the title scree
 # Game version. Online, the host and every player must match exactly: it's sent as the
 # WebSocket subprotocol, so a different version can't even connect (no silent breakage).
 # The release workflow checks that the git tag (vX.Y.Z) matches this.
-const GAME_VERSION := "0.8.2"
+const GAME_VERSION := "0.9.0"
 const NET_PROTOCOL := "arena-" + GAME_VERSION
 
 const PLAYER_COLORS := [Color(1.0, 0.42, 0.42), Color(0.31, 0.66, 1.0), Color(1.0, 0.82, 0.25), Color(0.72, 0.48, 1.0)]
